@@ -73,9 +73,13 @@ defmodule LangEx.LLM.Gemini do
 
   defp format_content(%Message.Human{content: c}), do: %{role: "user", parts: [%{text: c}]}
   defp format_content(%Message.AI{content: c}), do: %{role: "model", parts: [%{text: c}]}
-  defp format_content(%{role: _, content: _} = raw), do: %{role: raw.role, parts: [%{text: raw.content}]}
 
-  defp parse_response(%{"candidates" => [%{"content" => %{"parts" => [%{"text" => text} | _]}} | _]}) do
+  defp format_content(%{role: _, content: _} = raw),
+    do: %{role: raw.role, parts: [%{text: raw.content}]}
+
+  defp parse_response(%{
+         "candidates" => [%{"content" => %{"parts" => [%{"text" => text} | _]}} | _]
+       }) do
     {:ok, Message.ai(text)}
   end
 
