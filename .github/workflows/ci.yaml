@@ -1,0 +1,212 @@
+name: Elixir CI Checks
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  DEPENDENCY_FILE: mix.lock
+  ELIXIR_VERSION: 1.16.2
+  JOB_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  OTP_VERSION: 26.2.5
+  RELEVANT_FILES: "mix.lock mix.exs lib config test"
+  REPOSITORY: lang_ex
+  RUNNER_OS: ubuntu22
+  SHA: ${{ github.sha }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types:
+      - synchronize
+      - opened
+      - reopened
+
+jobs:
+  static:
+    name: Static Checks
+    runs-on: runs-on,runner=4cpu-linux-x64
+    outputs:
+      HASH: ${{ steps.hash.outputs.HASH }}
+    steps:
+      - name: Checkout latest codebase
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+          clean: false
+          persist-credentials: true
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        env:
+          ImageOS: ${{ env.RUNNER_OS }}
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          version-type: strict
+      - name: Get SHA sum (HASH) of relevant files
+        id: hash
+        run: |
+          git config --global --add safe.directory /__w/${{ env.REPOSITORY }}/${{ env.REPOSITORY }}
+          HASH="$(git ls-tree ${{ env.SHA }} -- ${{ env.RELEVANT_FILES }} | sha1sum | cut -d' ' -f1)"
+          echo "HASH=$HASH" >> $GITHUB_OUTPUT
+      - uses: runs-on/cache@v4
+        id: deps-cache
+        with:
+          path: |
+            deps
+            _build/dev
+          key: ${{ runner.os }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-precompile-deps-dev-${{ hashFiles('mix.lock') }}
+      - name: Install dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        env:
+          MIX_ENV: dev
+        run: |
+          mix deps.get
+          mix deps.compile
+      - uses: runs-on/cache@v4
+        id: build-cache
+        with:
+          path: "**/*"
+          key: ${{ runner.os }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-compile-dev-${{ steps.hash.outputs.HASH }}
+      - name: Compile with --warnings-as-errors
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        run: mix compile --warnings-as-errors --force
+      - name: Run format
+        run: mix format --check-formatted --dry-run
+      - name: Run publish --dry-run
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: mix hex.publish --dry-run
+
+  test:
+    name: Unit Tests
+    runs-on: runs-on,runner=2cpu-linux-x64
+    steps:
+      - name: Checkout latest codebase
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+          clean: false
+          persist-credentials: true
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        env:
+          ImageOS: ${{ env.RUNNER_OS }}
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          version-type: strict
+      - name: Get SHA sum (HASH) of relevant files
+        id: hash
+        run: |
+          git config --global --add safe.directory /__w/${{ env.REPOSITORY }}/${{ env.REPOSITORY }}
+          HASH="$(git ls-tree ${{ env.SHA }} -- ${{ env.RELEVANT_FILES }} | sha1sum | cut -d' ' -f1)"
+          echo "HASH=$HASH" >> $GITHUB_OUTPUT
+      - uses: runs-on/cache@v4
+        id: deps-cache
+        with:
+          path: |
+            deps
+            _build/test
+          key: ${{ runner.os }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-precompile-deps-test-${{ hashFiles('mix.lock') }}
+      - name: Install dependencies
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        env:
+          MIX_ENV: test
+        run: |
+          mix deps.get
+          mix deps.compile
+      - uses: runs-on/cache@v4
+        id: build-cache
+        with:
+          path: "**/*"
+          key: ${{ runner.os }}-${{ env.ELIXIR_VERSION }}-${{ env.OTP_VERSION }}-compile-test-${{ steps.hash.outputs.HASH }}
+      - name: Compile with MIX_ENV=test
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        env:
+          MIX_ENV: test
+        run: mix compile --force
+      - name: Run tests
+        run: mix test --trace
+
+  permit:
+    name: Permit Package Publishing
+    needs: [static, test]
+    runs-on: runs-on,runner=1cpu-linux-x64
+    outputs:
+      PUBLISH: ${{ steps.version.outputs.PUBLISH }}
+    steps:
+      - name: Checkout latest codebase
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          ref: ${{ env.SHA }}
+          clean: false
+          persist-credentials: true
+      - name: Create Approval File
+        shell: bash
+        run: |
+          echo "CI Checks Passed for SHA ${{ env.SHA }}" > approval.txt
+      - name: Process Package Version
+        shell: bash
+        id: version
+        run: |
+          echo "==============================================="
+          echo ""
+          git show HEAD~1:mix.exs > mix.old.exs
+          diff mix.old.exs mix.exs > diff.txt || true
+          old_version=$(grep -oP '@version "\K[^"]+' mix.old.exs)
+          new_version=$(grep -oP '@version "\K[^"]+' mix.exs)
+          echo "Old Version: $old_version | New Version: $new_version"
+          if [ "$new_version" != "$old_version" ]; then
+            if [ "$new_version" \> "$old_version" ]; then
+              echo "Version is upped - WILL publish upon merging the PR"
+              echo "PUBLISH=true" >> $GITHUB_OUTPUT
+            else
+              echo "Version is lower than the original version - blocking publication"
+              echo "PUBLISH=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          else
+            echo "PUBLISH=false" >> $GITHUB_OUTPUT
+            echo "Version is unchanged - WONT publish upon merging the PR"
+          fi
+          echo ""
+          echo "==============================================="
+      - name: Cache Approval File
+        uses: runs-on/cache/save@v4
+        with:
+          path: approval.txt
+          key: ${{ runner.os }}-${{ env.REPOSITORY }}-approval-${{ needs.static.outputs.HASH }}
+
+  publish:
+    name: Publish Hex Package
+    needs: [permit]
+    env:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+    runs-on: runs-on,runner=2cpu-linux-x64
+    if: needs.permit.outputs.PUBLISH == 'true' && github.event_name == 'push'
+    steps:
+      - name: Checkout latest codebase
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+          clean: false
+          persist-credentials: true
+      - name: Setup Elixir
+        uses: erlef/setup-beam@v1
+        env:
+          ImageOS: ${{ env.RUNNER_OS }}
+        with:
+          elixir-version: ${{ env.ELIXIR_VERSION }}
+          otp-version: ${{ env.OTP_VERSION }}
+          version-type: strict
+      - name: Get dependencies
+        shell: bash
+        run: mix deps.get
+      - name: Publish package
+        shell: bash
+        run: mix hex.publish --yes
