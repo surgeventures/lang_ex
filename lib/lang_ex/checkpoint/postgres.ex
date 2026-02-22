@@ -83,7 +83,7 @@ if Code.ensure_loaded?(Ecto) do
         checkpoint_id: row.checkpoint_id,
         parent_id: row.parent_id,
         state: restore_atom_keys(row.state),
-        next_nodes: Enum.map(row.next_nodes || [], &String.to_existing_atom/1),
+        next_nodes: Enum.map(row.next_nodes || [], &String.to_atom/1),
         step: row.step,
         metadata: row.metadata || %{},
         pending_interrupts: deserialize_interrupts(row.pending_interrupts),
@@ -92,7 +92,7 @@ if Code.ensure_loaded?(Ecto) do
     end
 
     defp restore_atom_keys(map) when is_map(map) do
-      Map.new(map, fn {k, v} -> {String.to_existing_atom(k), restore_atom_keys(v)} end)
+      Map.new(map, fn {k, v} -> {String.to_atom(k), restore_atom_keys(v)} end)
     end
 
     defp restore_atom_keys(list) when is_list(list), do: Enum.map(list, &restore_atom_keys/1)
@@ -126,6 +126,6 @@ if Code.ensure_loaded?(Ecto) do
     end
 
     defp safe_to_atom(nil), do: nil
-    defp safe_to_atom(s) when is_binary(s), do: String.to_existing_atom(s)
+    defp safe_to_atom(s) when is_binary(s), do: String.to_atom(s)
   end
 end

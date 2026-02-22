@@ -20,10 +20,11 @@
 - **Send fan-out** - dynamic map-reduce patterns with `%Send{}` from conditional edges
 - **Managed values** - `remaining_steps` automatically injected and tracked per super-step
 - **ChatModels registry** - auto-resolve model strings (`"gpt-4o"`, `"claude-sonnet-4-20250514"`) to provider modules
-- **LLM adapters** - built-in OpenAI and Anthropic, extensible via `LangEx.LLM` behaviour
+- **LLM adapters** - built-in OpenAI, Anthropic, and Gemini, extensible via `LangEx.LLM` behaviour
+- **Tool calling** - provider-agnostic `%Tool{}` definitions with optional embedded functions; `ToolNode` executes calls as a graph node with parallel dispatch and condition routing
 - **MessagesState** - pre-built schema with `messages` key and `add_messages` reducer
 
-> **Want to try it hands-on?** The [Support Triage Router](examples/support_triage/) example wires up a full graph with conditional routing, Gemini LLM calls, human-in-the-loop interrupts, and Postgres checkpointing.
+> **Want to try it hands-on?** The [Incident Responder](https://github.com/surgeventures/lang_ex/tree/main/examples/incident_responder) example builds a DevOps agent with the `ToolNode` pattern — multi-step tool chains, conditional routing, human-in-the-loop interrupts, and Postgres checkpointing.
 
 ## Installation
 
