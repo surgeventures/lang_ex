@@ -150,8 +150,25 @@ defmodule LangEx.LLM.Anthropic do
   defp format_message(%{role: _, content: _} = raw), do: raw
   defp format_message(%{role: _} = raw), do: raw
 
+  defp format_message(%{content: c, tool_calls: calls}) when is_list(calls) and calls != [],
+    do: %{role: "assistant", content: text_blocks(c) ++ Enum.map(calls, &format_outgoing_call/1)}
+
+  defp format_message(%{content: c, tool_calls: _}),
+    do: %{role: "assistant", content: c}
+
+  defp format_message(%{content: c, tool_call_id: id}),
+    do: %{
+      role: "user",
+      content: [%{"type" => "tool_result", "tool_use_id" => id, "content" => c}]
+    }
+
+  defp format_message(%{content: c}), do: %{role: "user", content: c}
+
   defp format_outgoing_call(%Message.ToolCall{name: n, id: id, args: a}),
     do: %{"type" => "tool_use", "id" => id, "name" => n, "input" => a}
+
+  defp format_outgoing_call(%{name: n, id: id, args: a}),
+    do: %{"type" => "tool_use", "id" => id, "name" => to_string(n), "input" => a}
 
   defp format_outgoing_call(raw), do: raw
 

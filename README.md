@@ -33,7 +33,7 @@ Add `lang_ex` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:lang_ex, "~> 0.2.0"},
+    {:lang_ex, "~> 0.3.0"},
 
     # Optional: for Redis checkpointer (connection starts automatically when present)
     {:redix, "~> 1.5"},
