@@ -24,7 +24,7 @@
 - **Tool calling** - provider-agnostic `%Tool{}` definitions with optional embedded functions; `ToolNode` executes calls as a graph node with parallel dispatch and condition routing
 - **MessagesState** - pre-built schema with `messages` key and `add_messages` reducer
 
-> **Want to try it hands-on?** The [Incident Responder](https://github.com/surgeventures/lang_ex/tree/main/examples/incident_responder) example builds a DevOps agent with the `ToolNode` pattern — multi-step tool chains, conditional routing, human-in-the-loop interrupts, and Postgres checkpointing.
+> **Want to try it hands-on?** The [Incident Responder](https://github.com/surgeventures/lang_ex/tree/main/examples/incident_responder) example builds a DevOps agent with the `ToolNode` pattern - multi-step tool chains, conditional routing, human-in-the-loop interrupts, and Postgres checkpointing.
 
 ## Installation
 
@@ -33,7 +33,7 @@ Add `lang_ex` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:lang_ex, "~> 0.1.0"},
+    {:lang_ex, "~> 0.2.0"},
 
     # Optional: for Redis checkpointer (connection starts automatically when present)
     {:redix, "~> 1.5"},
