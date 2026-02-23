@@ -13,11 +13,28 @@ defmodule LangEx.Message do
     @type t :: %__MODULE__{content: String.t(), id: String.t() | nil}
   end
 
+  defmodule ToolCall do
+    @moduledoc "A structured tool/function call requested by the LLM."
+    @derive Jason.Encoder
+    defstruct [:name, :id, :args]
+
+    @type t :: %__MODULE__{
+            name: String.t(),
+            id: String.t() | nil,
+            args: map()
+          }
+  end
+
   defmodule AI do
     @moduledoc false
     @derive Jason.Encoder
     defstruct [:content, :id, tool_calls: []]
-    @type t :: %__MODULE__{content: String.t(), id: String.t() | nil, tool_calls: list()}
+
+    @type t :: %__MODULE__{
+            content: String.t() | nil,
+            id: String.t() | nil,
+            tool_calls: [LangEx.Message.ToolCall.t()]
+          }
   end
 
   defmodule System do

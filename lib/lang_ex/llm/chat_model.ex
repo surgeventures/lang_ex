@@ -17,16 +17,21 @@ defmodule LangEx.ChatModel do
   - `:provider` - module implementing `LangEx.LLM` (explicit)
   - `:model` - model string like `"gpt-4o"` or `"claude-sonnet-4-20250514"` (auto-resolves provider)
   - `:messages_key` - state key holding the message list (default: `:messages`)
+  - `:tools` - list of `%LangEx.Tool{}` definitions for function calling
   - All other opts forwarded to `provider.chat/2` (`:api_key`, `:temperature`, etc.)
 
   Either `:provider` or `:model` must be given. When `:model` is a string and
   `:provider` is absent, the provider is resolved via `LangEx.ChatModels.init_chat_model/2`.
 
+  Tool execution is handled by a separate `LangEx.ToolNode` in the graph,
+  not by the LLM node itself.
+
   ## Examples
 
-      Graph.add_node(:llm, ChatModel.node(provider: LangEx.LLM.OpenAI, model: "gpt-4o"))
       Graph.add_node(:llm, ChatModel.node(model: "gpt-4o"))
-      Graph.add_node(:llm, ChatModel.node(model: "claude-sonnet-4-20250514", temperature: 0.3))
+      Graph.add_node(:llm, ChatModel.node(model: "gpt-4o",
+        tools: [%LangEx.Tool{name: "search", ...}]
+      ))
   """
   @spec node(keyword()) :: (map() -> map())
   def node(opts) do
