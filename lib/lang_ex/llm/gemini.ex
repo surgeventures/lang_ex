@@ -154,9 +154,65 @@ defmodule LangEx.LLM.Gemini do
   defp maybe_upcase_items(schema), do: schema
 
   defp format_content(%Message.Human{content: c}), do: %{role: "user", parts: [%{text: c}]}
-  defp format_content(%Message.AI{content: c}), do: %{role: "model", parts: [%{text: c}]}
+
+  defp format_content(%Message.AI{content: c, tool_calls: []}),
+    do: %{role: "model", parts: [%{text: c}]}
+
+  defp format_content(%Message.AI{tool_calls: [%Message.ToolCall{name: n, args: a} | _]}),
+    do: %{role: "model", parts: [%{"functionCall" => %{"name" => n, "args" => a}}]}
+
+  defp format_content(%Message.Tool{content: c, tool_call_id: _} = tool) do
+    name = infer_tool_name(tool)
+    response = safe_decode(c)
+
+    %{
+      role: "function",
+      parts: [%{"functionResponse" => %{"name" => name, "response" => response}}]
+    }
+  end
+
+  defp format_content(%{tool_calls: [call | _]}) when is_map(call),
+    do: %{
+      role: "model",
+      parts: [
+        %{
+          "functionCall" => %{
+            "name" => to_string(call[:name] || call["name"]),
+            "args" => call[:args] || call["args"] || %{}
+          }
+        }
+      ]
+    }
+
+  defp format_content(%{tool_call_id: _, content: c} = tool) do
+    name = infer_tool_name(tool)
+    response = safe_decode(c)
+
+    %{
+      role: "function",
+      parts: [%{"functionResponse" => %{"name" => name, "response" => response}}]
+    }
+  end
+
+  defp format_content(%{content: c, tool_calls: _}),
+    do: %{role: "model", parts: [%{text: c || ""}]}
+
   defp format_content(%{role: _, parts: _} = raw), do: raw
   defp format_content(%{role: r, content: c}), do: %{role: r, parts: [%{text: c}]}
+  defp format_content(%{content: c}), do: %{role: "user", parts: [%{text: c}]}
+
+  defp infer_tool_name(%{name: n}) when is_binary(n), do: n
+  defp infer_tool_name(%{"name" => n}) when is_binary(n), do: n
+  defp infer_tool_name(_), do: "unknown"
+
+  defp safe_decode(c) when is_binary(c) do
+    case Jason.decode(c) do
+      {:ok, map} when is_map(map) -> map
+      _ -> %{"result" => c}
+    end
+  end
+
+  defp safe_decode(c), do: %{"result" => inspect(c)}
 
   defp maybe_put(map, _key, nil), do: map
   defp maybe_put(map, key, value), do: Map.put(map, key, value)
