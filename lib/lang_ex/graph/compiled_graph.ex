@@ -73,7 +73,7 @@ defmodule LangEx.CompiledGraph do
          tid when not is_nil(tid) <- opts |> Keyword.get(:config, []) |> Keyword.get(:thread_id),
          {:ok, %Checkpoint{pending_interrupts: nil} = saved} <-
            cp.load(Keyword.get(opts, :config, [])) do
-      saved.state
+      State.apply_update(saved.state, input, graph.reducers)
     else
       _ -> State.apply_update(graph.initial_state, input, graph.reducers)
     end

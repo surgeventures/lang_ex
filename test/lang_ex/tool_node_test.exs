@@ -129,6 +129,7 @@ defmodule LangEx.ToolNodeTest do
       assert content =~ "echo"
     end
 
+    @tag capture_log: true
     test "raises for unregistered tool when handle_tool_errors: false" do
       node_fn = ToolNode.node([echo_tool()], handle_tool_errors: false)
       call = %Message.ToolCall{name: "nonexistent", id: "c1", args: %{}}
@@ -139,6 +140,7 @@ defmodule LangEx.ToolNodeTest do
   end
 
   describe "error handling" do
+    @tag capture_log: true
     test "handle_tool_errors: true returns error ToolMessage" do
       node_fn = ToolNode.node([failing_tool()], handle_tool_errors: true)
       call = %Message.ToolCall{name: "fail", id: "c1", args: %{}}
@@ -148,6 +150,7 @@ defmodule LangEx.ToolNodeTest do
       assert content =~ "boom"
     end
 
+    @tag capture_log: true
     test "handle_tool_errors: false propagates exception" do
       node_fn = ToolNode.node([failing_tool()], handle_tool_errors: false)
       call = %Message.ToolCall{name: "fail", id: "c1", args: %{}}
@@ -156,6 +159,7 @@ defmodule LangEx.ToolNodeTest do
       assert_raise RuntimeError, "boom", fn -> node_fn.(state) end
     end
 
+    @tag capture_log: true
     test "handle_tool_errors: string returns custom message" do
       node_fn = ToolNode.node([failing_tool()], handle_tool_errors: "Something went wrong")
       call = %Message.ToolCall{name: "fail", id: "c1", args: %{}}
@@ -164,6 +168,7 @@ defmodule LangEx.ToolNodeTest do
       %{messages: [%Message.Tool{content: "Something went wrong"}]} = node_fn.(state)
     end
 
+    @tag capture_log: true
     test "handle_tool_errors: function gets the exception" do
       handler = fn e -> "Custom: #{Exception.message(e)}" end
       node_fn = ToolNode.node([failing_tool()], handle_tool_errors: handler)
