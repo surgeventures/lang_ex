@@ -26,6 +26,14 @@ defmodule LangEx.LLM.Gemini do
 
   @impl true
   def chat(messages, opts \\ []) do
+    case chat_with_usage(messages, opts) do
+      {:ok, ai, _usage} -> {:ok, ai}
+      {:error, _} = err -> err
+    end
+  end
+
+  @impl true
+  def chat_with_usage(messages, opts \\ []) do
     api_key = Config.api_key!(:gemini, opts)
     model = Config.model(:gemini, opts)
     tools = Keyword.get(opts, :tools, [])
@@ -41,9 +49,11 @@ defmodule LangEx.LLM.Gemini do
   end
 
   defp handle_response({:ok, %{status: 200, body: response}}) do
+    usage = extract_gemini_usage(response)
+
     response
     |> extract_parts()
-    |> handle_parts(response)
+    |> handle_parts(response, usage)
   end
 
   defp handle_response({:ok, %{status: status, body: resp_body}}),
@@ -52,15 +62,25 @@ defmodule LangEx.LLM.Gemini do
   defp handle_response({:error, reason}),
     do: {:error, reason}
 
-  defp handle_parts({:text, text}, _),
-    do: {:ok, Message.ai(text)}
+  defp handle_parts({:text, text}, _, usage),
+    do: {:ok, Message.ai(text), usage}
 
-  defp handle_parts({:function_call, name, args}, _) do
-    {:ok, Message.ai(nil, tool_calls: [%Message.ToolCall{name: name, id: nil, args: args}])}
+  defp handle_parts({:function_call, name, args}, _, usage) do
+    {:ok, Message.ai(nil, tool_calls: [%Message.ToolCall{name: name, id: nil, args: args}]),
+     usage}
   end
 
-  defp handle_parts(:error, response),
+  defp handle_parts(:error, response, _usage),
     do: {:error, {:unexpected_response, response}}
+
+  defp extract_gemini_usage(%{"usageMetadata" => meta}) when is_map(meta) do
+    %{
+      input_tokens: meta["promptTokenCount"] || 0,
+      output_tokens: meta["candidatesTokenCount"] || 0
+    }
+  end
+
+  defp extract_gemini_usage(_), do: %{input_tokens: 0, output_tokens: 0}
 
   defp extract_parts(%{"candidates" => [%{"content" => %{"parts" => parts}} | _]}) do
     find_function_call(parts) || find_text(parts) || :error

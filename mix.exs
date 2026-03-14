@@ -1,7 +1,7 @@
 defmodule LangEx.MixProject do
   use Mix.Project
 
-  @version "0.3.1"
+  @version "0.4.0"
   @source_url "https://github.com/surgeventures/lang_ex"
 
   def project do
@@ -56,6 +56,7 @@ defmodule LangEx.MixProject do
     [
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
+      {:telemetry, "~> 1.0"},
       {:redix, "~> 1.5", optional: true},
       {:postgrex, "~> 0.19", optional: true},
       {:ecto_sql, "~> 3.12", optional: true},
