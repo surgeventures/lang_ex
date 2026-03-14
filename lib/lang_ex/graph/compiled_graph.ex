@@ -50,7 +50,7 @@ defmodule LangEx.CompiledGraph do
       when cp != nil and resume_val != nil do
     config = Keyword.get(opts, :config, [])
 
-    case cp.load(config) do
+    case load_checkpoint(cp, config) do
       {:ok, %Checkpoint{pending_interrupts: [%{node: node} | _]} = saved} ->
         Pregel.run(
           graph,
@@ -72,11 +72,19 @@ defmodule LangEx.CompiledGraph do
     with cp when not is_nil(cp) <- graph.checkpointer,
          tid when not is_nil(tid) <- opts |> Keyword.get(:config, []) |> Keyword.get(:thread_id),
          {:ok, %Checkpoint{pending_interrupts: nil} = saved} <-
-           cp.load(Keyword.get(opts, :config, [])) do
+           load_checkpoint(cp, Keyword.get(opts, :config, [])) do
       State.apply_update(saved.state, input, graph.reducers)
     else
       _ -> State.apply_update(graph.initial_state, input, graph.reducers)
     end
+  end
+
+  defp load_checkpoint(cp, config) do
+    metadata = %{checkpointer: cp, thread_id: Keyword.get(config, :thread_id)}
+
+    :telemetry.span([:lang_ex, :checkpoint, :load], metadata, fn ->
+      {cp.load(config), metadata}
+    end)
   end
 
   defp build_run_opts(opts, graph, overrides \\ []) do

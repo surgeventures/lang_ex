@@ -27,6 +27,14 @@ defmodule LangEx.LLM.OpenAI do
 
   @impl true
   def chat(messages, opts \\ []) do
+    case chat_with_usage(messages, opts) do
+      {:ok, ai, _usage} -> {:ok, ai}
+      {:error, _} = err -> err
+    end
+  end
+
+  @impl true
+  def chat_with_usage(messages, opts \\ []) do
     api_key = Config.api_key!(:openai, opts)
     model = Config.model(:openai, opts)
     tools = Keyword.get(opts, :tools, [])
@@ -41,9 +49,11 @@ defmodule LangEx.LLM.OpenAI do
   end
 
   defp handle_response({:ok, %{status: 200, body: response}}) do
+    usage = extract_openai_usage(response)
+
     response
     |> extract_choice()
-    |> handle_choice(response)
+    |> handle_choice(response, usage)
   end
 
   defp handle_response({:ok, %{status: status, body: resp_body}}),
@@ -52,15 +62,21 @@ defmodule LangEx.LLM.OpenAI do
   defp handle_response({:error, reason}),
     do: {:error, reason}
 
-  defp handle_choice({:text, content}, _),
-    do: {:ok, Message.ai(content)}
+  defp handle_choice({:text, content}, _, usage),
+    do: {:ok, Message.ai(content), usage}
 
-  defp handle_choice({:tool_calls, raw_calls}, _) do
-    {:ok, Message.ai(nil, tool_calls: Enum.map(raw_calls, &parse_tool_call/1))}
+  defp handle_choice({:tool_calls, raw_calls}, _, usage) do
+    {:ok, Message.ai(nil, tool_calls: Enum.map(raw_calls, &parse_tool_call/1)), usage}
   end
 
-  defp handle_choice(:error, response),
+  defp handle_choice(:error, response, _usage),
     do: {:error, {:unexpected_response, response}}
+
+  defp extract_openai_usage(%{"usage" => %{"prompt_tokens" => inp, "completion_tokens" => out}}) do
+    %{input_tokens: inp, output_tokens: out}
+  end
+
+  defp extract_openai_usage(_), do: %{input_tokens: 0, output_tokens: 0}
 
   defp extract_choice(%{"choices" => [%{"message" => message} | _]}),
     do: classify_message(message["tool_calls"], message["content"])

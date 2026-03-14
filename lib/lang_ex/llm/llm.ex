@@ -17,7 +17,6 @@ defmodule LangEx.LLM do
           api_key = opts[:api_key] || System.get_env("GROQ_API_KEY")
           model = opts[:model] || "llama-3.3-70b"
           tools = opts[:tools] || []
-          # Format tools: access struct fields to build your provider's wire format
           formatted_tools = Enum.map(tools, fn
             %LangEx.Tool{name: name, description: desc, parameters: params} ->
               %{type: "function", function: %{name: name, description: desc, parameters: params}}
@@ -68,7 +67,16 @@ defmodule LangEx.LLM do
 
   @type message :: %{role: String.t(), content: String.t()}
 
+  @type usage :: %{
+          :input_tokens => non_neg_integer(),
+          :output_tokens => non_neg_integer(),
+          optional(:cache_creation_input_tokens) => non_neg_integer(),
+          optional(:cache_read_input_tokens) => non_neg_integer(),
+          optional(:thinking) => String.t()
+        }
+
   @type chat_result :: {:ok, LangEx.Message.AI.t()} | {:error, term()}
+  @type chat_with_usage_result :: {:ok, LangEx.Message.AI.t(), usage()} | {:error, term()}
 
   @doc """
   Sends a list of messages to the LLM and returns an AI response message.
@@ -81,4 +89,16 @@ defmodule LangEx.LLM do
   - `:tools` - list of `%LangEx.Tool{}` definitions
   """
   @callback chat([message()], keyword()) :: chat_result()
+
+  @doc """
+  Like `chat/2` but also returns token usage information.
+
+  Returns `{:ok, %Message.AI{}, usage_map}` on success. The usage map
+  contains at minimum `:input_tokens` and `:output_tokens`.
+
+  Optional callback — defaults to calling `chat/2` with zero usage.
+  """
+  @callback chat_with_usage([message()], keyword()) :: chat_with_usage_result()
+
+  @optional_callbacks [chat_with_usage: 2]
 end

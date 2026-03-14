@@ -41,8 +41,17 @@ defmodule LangEx.Pregel do
     })
   end
 
-  def run(%CompiledGraph{} = graph, state, %{resume: %{node: node, value: value}} = opts)
-      when not is_nil(node) do
+  def run(%CompiledGraph{} = graph, state, %{} = opts) do
+    metadata = graph_invoke_metadata(graph, opts)
+
+    :telemetry.span([:lang_ex, :graph, :invoke], metadata, fn ->
+      result = do_run(graph, state, opts)
+      {result, Map.put(metadata, :result, result_tag(result))}
+    end)
+  end
+
+  defp do_run(graph, state, %{resume: %{node: node, value: value}} = opts)
+       when not is_nil(node) do
     Process.put(:lang_ex_resume, value)
     result = execute_single_node(graph, state, node, opts)
     Process.delete(:lang_ex_resume)
@@ -58,7 +67,7 @@ defmodule LangEx.Pregel do
     end
   end
 
-  def run(%CompiledGraph{} = graph, state, opts) do
+  defp do_run(graph, state, opts) do
     graph
     |> resolve_targets(:__start__, state)
     |> step(graph, state, opts)
@@ -82,11 +91,17 @@ defmodule LangEx.Pregel do
 
   defp run_super_step(active, graph, state, opts) do
     emit(opts, {:step_start, opts.step, active})
+    metadata = %{step: opts.step, active_nodes: active}
 
-    state
-    |> inject_managed(opts)
-    |> then(&execute_nodes(graph, &1, active, opts))
-    |> handle_super_step_result(graph, active, opts)
+    :telemetry.span([:lang_ex, :graph, :step], metadata, fn ->
+      result =
+        state
+        |> inject_managed(opts)
+        |> then(&execute_nodes(graph, &1, active, opts))
+        |> handle_super_step_result(graph, active, opts)
+
+      {result, metadata}
+    end)
   end
 
   defp handle_super_step_result({:interrupted, payload, int_state, node}, graph, _active, opts) do
@@ -129,7 +144,11 @@ defmodule LangEx.Pregel do
 
   defp spawn_node_task(graph, name, state, opts) do
     Task.Supervisor.async_nolink(LangEx.TaskSupervisor, fn ->
-      {name, call_node(graph, name, state, opts)}
+      metadata = %{node: name}
+
+      :telemetry.span([:lang_ex, :node, :execute], metadata, fn ->
+        {{name, call_node(graph, name, state, opts)}, metadata}
+      end)
     end)
   end
 
@@ -142,7 +161,7 @@ defmodule LangEx.Pregel do
   end
 
   defp reduce_task_result({_task, {:ok, {_name, result}}}, {acc, cmds}, reducers)
-       when is_tuple(acc) do
+       when is_map(acc) do
     merge_node_result(result, acc, reducers, cmds)
   end
 
@@ -154,15 +173,18 @@ defmodule LangEx.Pregel do
 
   defp execute_single_node(graph, state, node_name, opts) do
     emit(opts, {:node_start, node_name})
+    metadata = %{node: node_name}
 
-    case call_node(graph, node_name, state, opts) do
-      {:interrupted, _, _} = interrupt ->
-        interrupt
+    :telemetry.span([:lang_ex, :node, :execute], metadata, fn ->
+      case call_node(graph, node_name, state, opts) do
+        {:interrupted, _, _} = interrupt ->
+          {interrupt, metadata}
 
-      result ->
-        emit(opts, {:node_end, node_name, result})
-        merge_node_result(result, state, graph.reducers, [])
-    end
+        result ->
+          emit(opts, {:node_end, node_name, result})
+          {merge_node_result(result, state, graph.reducers, []), metadata}
+      end
+    end)
   end
 
   defp call_node(graph, name, state, opts) do
@@ -268,7 +290,11 @@ defmodule LangEx.Pregel do
   defp do_save_checkpoint(nil, _cp, _config, _data), do: :ok
 
   defp do_save_checkpoint(thread_id, cp, config, data) do
-    cp.save(config, Checkpoint.new([{:thread_id, thread_id} | data]))
+    metadata = %{checkpointer: cp, thread_id: thread_id}
+
+    :telemetry.span([:lang_ex, :checkpoint, :save], metadata, fn ->
+      {cp.save(config, Checkpoint.new([{:thread_id, thread_id} | data])), metadata}
+    end)
   end
 
   defp save_interrupt(_graph, state, _node, payload, %{checkpointer: nil}) do
@@ -307,4 +333,17 @@ defmodule LangEx.Pregel do
 
   defp emit(%{emit_to: nil}, _event), do: :ok
   defp emit(%{emit_to: pid}, event), do: send(pid, {:lang_ex_stream, event})
+
+  # --- Telemetry helpers ---
+
+  defp graph_invoke_metadata(graph, opts) do
+    %{
+      graph_id: graph.nodes |> Map.keys() |> List.first(),
+      thread_id: opts |> Map.get(:config, []) |> Keyword.get(:thread_id)
+    }
+  end
+
+  defp result_tag({:ok, _}), do: :ok
+  defp result_tag({:interrupt, _, _}), do: :interrupt
+  defp result_tag({:error, _}), do: :error
 end

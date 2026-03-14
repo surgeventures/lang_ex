@@ -37,13 +37,24 @@ defmodule LangEx.ChatModel do
   def node(opts) do
     {provider, llm_opts} = resolve_provider(opts)
     {messages_key, llm_opts} = Keyword.pop(llm_opts, :messages_key, :messages)
+    model = Keyword.get(llm_opts, :model)
 
     fn state ->
       messages = Map.fetch!(state, messages_key)
-      {:ok, ai_message} = provider.chat(messages, llm_opts)
+      metadata = %{provider: provider, model: model, message_count: length(messages)}
+
+      {:ok, ai_message} =
+        :telemetry.span([:lang_ex, :llm, :chat], metadata, fn ->
+          result = provider.chat(messages, llm_opts)
+          {result, Map.put(metadata, :status, chat_status(result))}
+        end)
+
       %{messages_key => [ai_message]}
     end
   end
+
+  defp chat_status({:ok, _}), do: :ok
+  defp chat_status({:error, _}), do: :error
 
   defp resolve_provider(opts) do
     opts
