@@ -2,7 +2,7 @@ defmodule LangEx.Checkpoint.InterruptTest do
   use ExUnit.Case, async: true
 
   alias LangEx.Graph
-  alias LangEx.Types.Command
+  alias LangEx.Command
 
   describe "interrupts and resume" do
     test "interrupt pauses execution and resume continues it" do

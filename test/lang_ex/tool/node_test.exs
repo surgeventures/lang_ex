@@ -1,8 +1,10 @@
-defmodule LangEx.ToolNodeTest do
+defmodule LangEx.Tool.NodeTest do
   use ExUnit.Case, async: true
 
-  alias LangEx.{Message, Tool, ToolNode}
-  alias LangEx.ToolNode.ToolCallRequest
+  alias LangEx.Message
+  alias LangEx.Tool
+  alias LangEx.Tool.Node, as: ToolNode
+  alias LangEx.Tool.Node.ToolCallRequest
 
   defp echo_tool do
     %Tool{

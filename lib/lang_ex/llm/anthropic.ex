@@ -20,7 +20,7 @@ defmodule LangEx.LLM.Anthropic do
 
   Pass `:tools` (list of `%LangEx.Tool{}`) to enable tool calling.
   The adapter returns `{:ok, %Message.AI{tool_calls: [...]}}` when the
-  model requests tool use. Use `LangEx.ToolNode` to execute them.
+  model requests tool use. Use `LangEx.Tool.Node` to execute them.
 
       LangEx.LLM.Anthropic.chat(messages,
         model: "claude-sonnet-4-20250514",
@@ -39,10 +39,10 @@ defmodule LangEx.LLM.Anthropic do
   @behaviour LangEx.LLM
 
   alias LangEx.Config
+  alias LangEx.LLM.Anthropic.Formatter
+  alias LangEx.LLM.Anthropic.SSE
   alias LangEx.Message
   alias LangEx.Tool
-
-  require Logger
 
   @base_url "https://api.anthropic.com/v1"
   @api_version "2023-06-01"
@@ -50,11 +50,13 @@ defmodule LangEx.LLM.Anthropic do
 
   @impl true
   def chat(messages, opts \\ []) do
-    case chat_with_usage(messages, opts) do
-      {:ok, ai, _usage} -> {:ok, ai}
-      {:error, _} = err -> err
-    end
+    messages
+    |> chat_with_usage(opts)
+    |> drop_usage()
   end
+
+  defp drop_usage({:ok, ai, _usage}), do: {:ok, ai}
+  defp drop_usage({:error, _} = err), do: err
 
   @impl true
   def chat_with_usage(messages, opts \\ []) do
@@ -66,12 +68,12 @@ defmodule LangEx.LLM.Anthropic do
     caching? = Keyword.get(opts, :prompt_caching, true)
     stream? = Keyword.get(opts, :stream, true)
 
-    {system_prompt, conversation} = extract_system(messages)
+    {system_prompt, conversation} = Formatter.extract_system(messages)
 
     body =
       %{
         model: model,
-        messages: Enum.map(conversation, &format_message/1),
+        messages: Enum.map(conversation, &Formatter.format_message/1),
         max_tokens: opts[:max_tokens] || default_max_tokens(model)
       }
       |> put_stream(stream?)
@@ -79,240 +81,157 @@ defmodule LangEx.LLM.Anthropic do
       |> put_system(system_prompt, caching?)
       |> put_tools(tools, caching?)
 
-    do_request(body, api_key, on_thinking, caching?)
+    send_request(body, api_key, on_thinking, caching?)
   end
 
   defp put_stream(body, true), do: Map.put(body, :stream, true)
   defp put_stream(body, false), do: body
 
   defp put_thinking(body, true, _opts), do: Map.put(body, :thinking, %{type: "adaptive"})
+  defp put_thinking(body, false, opts), do: put_present(body, :temperature, opts[:temperature])
 
-  defp put_thinking(body, false, opts), do: maybe_put(body, :temperature, opts[:temperature])
-
-  defp do_request(body, api_key, on_thinking, caching?) do
-    headers =
-      [
-        {"x-api-key", api_key},
-        {"anthropic-version", @api_version},
-        {"content-type", "application/json"}
-      ]
-      |> maybe_add_caching_header(caching?)
-
-    req_opts = [
+  defp send_request(body, api_key, on_thinking, caching?) do
+    [
       json: body,
-      headers: headers,
+      headers: build_headers(api_key, caching?),
       receive_timeout: 300_000,
       pool_timeout: 60_000
     ]
+    |> dispatch_request(on_thinking, body[:stream])
+  end
 
-    dispatch_request(req_opts, on_thinking, body[:stream])
+  defp build_headers(api_key, caching?) do
+    [
+      {"x-api-key", api_key},
+      {"anthropic-version", @api_version},
+      {"content-type", "application/json"}
+    ]
+    |> add_caching_header(caching?)
   end
 
   defp dispatch_request(req_opts, on_thinking, _stream? = true)
        when is_function(on_thinking, 1),
-       do: do_streaming_request(req_opts, on_thinking)
+       do: stream_request(req_opts, on_thinking)
 
   defp dispatch_request(req_opts, on_thinking, _stream?),
-    do: do_batch_request(req_opts, on_thinking)
+    do: batch_request(req_opts, on_thinking)
 
-  defp maybe_add_caching_header(headers, true),
+  defp add_caching_header(headers, true),
     do: headers ++ [{"anthropic-beta", @prompt_caching_beta}]
 
-  defp maybe_add_caching_header(headers, false), do: headers
+  defp add_caching_header(headers, false), do: headers
 
-  defp do_streaming_request(req_opts, on_thinking) do
-    ref = make_ref()
-    pkey = {__MODULE__, ref}
-    Process.put(pkey, initial_sse_state())
+  defp stream_request(req_opts, on_thinking) do
+    pkey = {__MODULE__, make_ref()}
+    Process.put(pkey, SSE.initial_state())
 
     callback = fn {:data, chunk}, {req, resp} ->
-      current = Process.get(pkey)
-      updated = process_sse_chunk(chunk, current, on_thinking)
-      Process.put(pkey, updated)
+      pkey
+      |> Process.get()
+      |> SSE.process_chunk(on_thinking, chunk)
+      |> then(&Process.put(pkey, &1))
+
       {:cont, {req, resp}}
     end
 
-    req_opts = Keyword.put(req_opts, :into, callback)
-
     result =
-      case Req.post("#{@base_url}/messages", req_opts) do
-        {:ok, %{status: 200, body: ""}} ->
-          build_message(Process.get(pkey))
-
-        {:ok, %{status: 200, body: %Req.Response.Async{}}} ->
-          build_message(Process.get(pkey))
-
-        {:ok, %{status: 200, body: raw}} when is_binary(raw) and byte_size(raw) > 0 ->
-          parse_sse_response(raw, on_thinking)
-
-        {:ok, %{status: 200, body: %{"content" => _} = json_resp}} ->
-          parse_json_response(json_resp)
-
-        {:ok, %{status: status, body: resp_body}} ->
-          {:error, {status, resp_body}}
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+      req_opts
+      |> Keyword.put(:into, callback)
+      |> then(&Req.post("#{@base_url}/messages", &1))
+      |> handle_streaming_response(pkey, on_thinking)
 
     Process.delete(pkey)
     result
   end
 
-  defp do_batch_request(req_opts, on_thinking) do
-    case Req.post("#{@base_url}/messages", req_opts) do
-      {:ok, %{status: 200, body: raw}} when is_binary(raw) ->
-        parse_sse_response(raw, on_thinking)
+  defp handle_streaming_response({:ok, %{status: 200, body: ""}}, pkey, _on_thinking),
+    do: SSE.build_message(Process.get(pkey))
 
-      {:ok, %{status: 200, body: %{"content" => _} = json_resp}} ->
-        parse_json_response(json_resp)
+  defp handle_streaming_response(
+         {:ok, %{status: 200, body: %Req.Response.Async{}}},
+         pkey,
+         _on_thinking
+       ),
+       do: SSE.build_message(Process.get(pkey))
 
-      {:ok, %{status: status, body: resp_body}} ->
-        {:error, {status, resp_body}}
+  defp handle_streaming_response({:ok, %{status: 200, body: raw}}, _pkey, on_thinking)
+       when is_binary(raw) and byte_size(raw) > 0,
+       do: SSE.parse_response(raw, on_thinking)
 
-      {:error, reason} ->
-        {:error, reason}
-    end
+  defp handle_streaming_response(
+         {:ok, %{status: 200, body: %{"content" => _} = json_resp}},
+         _pkey,
+         _on_thinking
+       ),
+       do: parse_json_response(json_resp)
+
+  defp handle_streaming_response({:ok, %{status: status, body: resp_body}}, _pkey, _on_thinking),
+    do: {:error, {status, resp_body}}
+
+  defp handle_streaming_response({:error, reason}, _pkey, _on_thinking),
+    do: {:error, reason}
+
+  defp batch_request(req_opts, on_thinking) do
+    "#{@base_url}/messages"
+    |> Req.post(req_opts)
+    |> handle_batch_response(on_thinking)
   end
 
-  defp initial_sse_state do
-    %{text: %{}, thinking: %{}, tools: %{}, tool_json: %{}, usage: %{}, line_buffer: ""}
+  defp handle_batch_response({:ok, %{status: 200, body: raw}}, on_thinking) when is_binary(raw),
+    do: SSE.parse_response(raw, on_thinking)
+
+  defp handle_batch_response(
+         {:ok, %{status: 200, body: %{"content" => _} = json_resp}},
+         _on_thinking
+       ),
+       do: parse_json_response(json_resp)
+
+  defp handle_batch_response({:ok, %{status: status, body: resp_body}}, _on_thinking),
+    do: {:error, {status, resp_body}}
+
+  defp handle_batch_response({:error, reason}, _on_thinking),
+    do: {:error, reason}
+
+  defp parse_json_response(%{"content" => content, "usage" => usage}) when is_list(content) do
+    parse_json_content(content, extract_usage(usage))
   end
 
-  defp process_sse_chunk(chunk, state, on_thinking) do
-    {lines, remainder} =
-      (state.line_buffer <> chunk)
-      |> split_sse_buffer()
-
-    lines
-    |> Enum.reduce(%{state | line_buffer: remainder}, &reduce_sse_line(&1, &2, on_thinking))
+  defp parse_json_response(%{"content" => content}) when is_list(content) do
+    parse_json_content(content, %{input_tokens: 0, output_tokens: 0})
   end
 
-  defp split_sse_buffer(buffer) do
-    case String.split(buffer, "\n") do
-      [single] -> {[], single}
-      parts -> {Enum.slice(parts, 0..-2//1), List.last(parts)}
-    end
+  defp parse_json_response(_), do: {:error, :unexpected_response}
+
+  defp parse_json_content(content, usage) do
+    content
+    |> Enum.filter(&(&1["type"] == "tool_use"))
+    |> build_json_response(content, usage)
   end
 
-  defp reduce_sse_line("data: " <> json_str, acc, on_thinking) do
-    case Jason.decode(json_str) do
-      {:ok, event} ->
-        updated = handle_sse_event(event, acc)
-        maybe_emit_thinking(event, updated, on_thinking)
-        updated
-
-      _ ->
-        acc
-    end
-  end
-
-  defp reduce_sse_line(_line, acc, _on_thinking), do: acc
-
-  defp maybe_emit_thinking(
-         %{"type" => "content_block_delta", "delta" => %{"type" => "thinking_delta"}},
-         state,
-         on_thinking
-       )
-       when is_function(on_thinking, 1) do
-    thinking_text =
-      state.thinking
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.map_join("", &elem(&1, 1))
-
-    on_thinking.(thinking_text)
-  end
-
-  defp maybe_emit_thinking(_, _, _), do: :ok
-
-  defp parse_sse_response(raw, on_thinking) do
-    raw
-    |> String.split("\n")
-    |> Enum.reduce(initial_sse_state(), &reduce_sse_line(&1, &2, on_thinking))
-    |> build_message()
-  end
-
-  defp handle_sse_event(
-         %{"type" => "content_block_start", "index" => idx, "content_block" => block},
-         state
-       ) do
-    case block do
-      %{"type" => "text"} ->
-        put_in(state, [:text, idx], "")
-
-      %{"type" => "thinking"} ->
-        put_in(state, [:thinking, idx], "")
-
-      %{"type" => "tool_use", "id" => id, "name" => name} ->
-        state
-        |> put_in([:tools, idx], %{id: id, name: name})
-        |> put_in([:tool_json, idx], "")
-
-      _ ->
-        state
-    end
-  end
-
-  defp handle_sse_event(
-         %{"type" => "content_block_delta", "index" => idx, "delta" => delta},
-         state
-       ) do
-    case delta do
-      %{"type" => "text_delta", "text" => text} ->
-        update_in(state, [:text, idx], &((&1 || "") <> text))
-
-      %{"type" => "thinking_delta", "thinking" => text} ->
-        update_in(state, [:thinking, idx], &((&1 || "") <> text))
-
-      %{"type" => "input_json_delta", "partial_json" => json} ->
-        update_in(state, [:tool_json, idx], &((&1 || "") <> json))
-
-      _ ->
-        state
-    end
-  end
-
-  defp handle_sse_event(%{"type" => "message_delta", "usage" => usage}, state) do
-    Map.update(state, :usage, usage, &Map.merge(&1, usage))
-  end
-
-  defp handle_sse_event(%{"type" => "message_start", "message" => %{"usage" => usage}}, state) do
-    Map.update(state, :usage, usage, &Map.merge(&1, usage))
-  end
-
-  defp handle_sse_event(_event, state), do: state
-
-  defp build_message(state) do
+  defp build_json_response([_ | _] = tool_uses, content, usage) do
     text =
-      state.text
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.map_join("", &elem(&1, 1))
+      content
+      |> Enum.filter(&(&1["type"] == "text"))
+      |> Enum.map_join("\n", & &1["text"])
 
-    thinking =
-      state.thinking
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.map_join("", &elem(&1, 1))
-
-    tool_calls =
-      state.tools
-      |> Enum.sort_by(&elem(&1, 0))
-      |> Enum.map(fn {idx, tc} ->
-        %Message.ToolCall{name: tc.name, id: tc.id, args: decode_tool_args(state.tool_json[idx])}
+    calls =
+      Enum.map(tool_uses, fn %{"id" => id, "name" => name, "input" => input} ->
+        %Message.ToolCall{name: name, id: id, args: input}
       end)
 
-    ai = Message.ai(text, tool_calls: tool_calls)
-    usage = state.usage |> extract_usage() |> Map.put(:thinking, thinking)
-    {:ok, ai, usage}
+    {:ok, Message.ai(text, tool_calls: calls), usage}
   end
 
-  defp decode_tool_args(nil), do: %{}
-
-  defp decode_tool_args(json) do
-    case Jason.decode(json) do
-      {:ok, parsed} -> parsed
-      _ -> %{}
-    end
+  defp build_json_response([], content, usage) do
+    {:ok,
+     content
+     |> Enum.find(&(&1["type"] == "text"))
+     |> extract_text_content()
+     |> Message.ai(), usage}
   end
+
+  defp extract_text_content(%{"text" => t}), do: t
+  defp extract_text_content(_), do: ""
 
   defp extract_usage(usage) when is_map(usage) do
     %{
@@ -332,109 +251,16 @@ defmodule LangEx.LLM.Anthropic do
     }
   end
 
-  defp parse_json_response(%{"content" => content, "usage" => usage}) when is_list(content) do
-    parse_json_content(content, extract_usage(usage))
-  end
-
-  defp parse_json_response(%{"content" => content}) when is_list(content) do
-    parse_json_content(content, %{input_tokens: 0, output_tokens: 0})
-  end
-
-  defp parse_json_response(_), do: {:error, :unexpected_response}
-
-  defp parse_json_content(content, usage) do
-    tool_uses = Enum.filter(content, &(&1["type"] == "tool_use"))
-
-    case tool_uses do
-      [_ | _] ->
-        text =
-          content
-          |> Enum.filter(&(&1["type"] == "text"))
-          |> Enum.map_join("\n", & &1["text"])
-
-        calls =
-          Enum.map(tool_uses, fn %{"id" => id, "name" => name, "input" => input} ->
-            %Message.ToolCall{name: name, id: id, args: input}
-          end)
-
-        {:ok, Message.ai(text, tool_calls: calls), usage}
-
-      [] ->
-        text =
-          case Enum.find(content, &(&1["type"] == "text")) do
-            %{"text" => t} -> t
-            _ -> ""
-          end
-
-        {:ok, Message.ai(text), usage}
-    end
-  end
-
-  defp extract_system(messages) do
-    {system_msgs, rest} = Enum.split_with(messages, &match?(%Message.System{}, &1))
-
-    prompt =
-      case system_msgs do
-        [] -> nil
-        msgs -> Enum.map_join(msgs, "\n", & &1.content)
-      end
-
-    {prompt, rest}
-  end
-
-  defp format_message(%Message.Human{content: c}), do: %{role: "user", content: c}
-
-  defp format_message(%Message.AI{content: c, tool_calls: []}),
-    do: %{role: "assistant", content: c}
-
-  defp format_message(%Message.AI{content: c, tool_calls: calls}) when calls != [],
-    do: %{
-      role: "assistant",
-      content: text_blocks(c) ++ Enum.map(calls, &format_outgoing_call/1)
-    }
-
-  defp format_message(%Message.Tool{content: c, tool_call_id: id}),
-    do: %{
-      role: "user",
-      content: [%{"type" => "tool_result", "tool_use_id" => id, "content" => c}]
-    }
-
-  defp format_message(%{role: _, content: _} = raw), do: raw
-  defp format_message(%{role: _} = raw), do: raw
-
-  defp format_message(%{content: c, tool_calls: calls}) when is_list(calls) and calls != [],
-    do: %{
-      role: "assistant",
-      content: text_blocks(c) ++ Enum.map(calls, &format_outgoing_call/1)
-    }
-
-  defp format_message(%{content: c, tool_calls: _}), do: %{role: "assistant", content: c}
-
-  defp format_message(%{content: c, tool_call_id: id}),
-    do: %{
-      role: "user",
-      content: [%{"type" => "tool_result", "tool_use_id" => id, "content" => c}]
-    }
-
-  defp format_message(%{content: c}), do: %{role: "user", content: c}
-
-  defp format_outgoing_call(%Message.ToolCall{name: n, id: id, args: a}),
-    do: %{"type" => "tool_use", "id" => id, "name" => n, "input" => a}
-
-  defp format_outgoing_call(%{name: n, id: id, args: a}),
-    do: %{"type" => "tool_use", "id" => id, "name" => to_string(n), "input" => a}
-
-  defp format_outgoing_call(raw), do: raw
-
-  defp text_blocks(nil), do: []
-  defp text_blocks(""), do: []
-  defp text_blocks(text), do: [%{"type" => "text", "text" => text}]
-
   defp default_max_tokens(model) when is_binary(model) do
-    if String.contains?(model, "sonnet"), do: 64_000, else: 128_000
+    model
+    |> String.contains?("sonnet")
+    |> max_tokens_for_family()
   end
 
   defp default_max_tokens(_), do: 128_000
+
+  defp max_tokens_for_family(true), do: 64_000
+  defp max_tokens_for_family(false), do: 128_000
 
   defp put_system(body, nil, _caching?), do: body
 
@@ -475,6 +301,6 @@ defmodule LangEx.LLM.Anthropic do
 
   defp format_tool(raw), do: raw
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 end

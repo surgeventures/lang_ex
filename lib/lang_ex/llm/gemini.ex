@@ -8,7 +8,7 @@ defmodule LangEx.LLM.Gemini do
 
   Pass `:tools` (list of `%LangEx.Tool{}`) to enable function calling.
   The adapter returns `{:ok, %Message.AI{tool_calls: [...]}}` when the
-  model requests a function call. Use `LangEx.ToolNode` to execute them.
+  model requests a function call. Use `LangEx.Tool.Node` to execute them.
 
       LangEx.LLM.Gemini.chat(messages,
         model: "gemini-2.5-flash",
@@ -26,11 +26,13 @@ defmodule LangEx.LLM.Gemini do
 
   @impl true
   def chat(messages, opts \\ []) do
-    case chat_with_usage(messages, opts) do
-      {:ok, ai, _usage} -> {:ok, ai}
-      {:error, _} = err -> err
-    end
+    messages
+    |> chat_with_usage(opts)
+    |> drop_usage()
   end
+
+  defp drop_usage({:ok, ai, _usage}), do: {:ok, ai}
+  defp drop_usage({:error, _} = err), do: err
 
   @impl true
   def chat_with_usage(messages, opts \\ []) do
@@ -44,7 +46,7 @@ defmodule LangEx.LLM.Gemini do
     |> put_system_instruction(system_instruction)
     |> put_generation_config(opts)
     |> put_tools(tools)
-    |> do_request(api_key, model)
+    |> send_request(api_key, model)
     |> handle_response()
   end
 
@@ -108,7 +110,7 @@ defmodule LangEx.LLM.Gemini do
   defp to_text(%{"text" => text}), do: {:text, text}
   defp to_text(_), do: nil
 
-  defp do_request(body, api_key, model) do
+  defp send_request(body, api_key, model) do
     Req.post("#{@base_url}/models/#{model}:generateContent",
       json: body,
       headers: [
@@ -133,8 +135,8 @@ defmodule LangEx.LLM.Gemini do
 
   defp put_generation_config(body, opts) do
     %{}
-    |> maybe_put(:temperature, opts[:temperature])
-    |> maybe_put(:maxOutputTokens, opts[:max_tokens])
+    |> put_present(:temperature, opts[:temperature])
+    |> put_present(:maxOutputTokens, opts[:max_tokens])
     |> merge_generation_config(body)
   end
 
@@ -157,21 +159,21 @@ defmodule LangEx.LLM.Gemini do
   defp upcase_types(%{type: type} = schema) when is_binary(type) do
     schema
     |> Map.put(:type, String.upcase(type))
-    |> maybe_upcase_properties()
-    |> maybe_upcase_items()
+    |> upcase_properties()
+    |> upcase_items()
   end
 
   defp upcase_types(other), do: other
 
-  defp maybe_upcase_properties(%{properties: props} = schema) when is_map(props),
+  defp upcase_properties(%{properties: props} = schema) when is_map(props),
     do: Map.put(schema, :properties, Map.new(props, fn {k, v} -> {k, upcase_types(v)} end))
 
-  defp maybe_upcase_properties(schema), do: schema
+  defp upcase_properties(schema), do: schema
 
-  defp maybe_upcase_items(%{items: items} = schema) when is_map(items),
+  defp upcase_items(%{items: items} = schema) when is_map(items),
     do: Map.put(schema, :items, upcase_types(items))
 
-  defp maybe_upcase_items(schema), do: schema
+  defp upcase_items(schema), do: schema
 
   defp format_content(%Message.Human{content: c}), do: %{role: "user", parts: [%{text: c}]}
 
@@ -182,12 +184,11 @@ defmodule LangEx.LLM.Gemini do
     do: %{role: "model", parts: [%{"functionCall" => %{"name" => n, "args" => a}}]}
 
   defp format_content(%Message.Tool{content: c, tool_call_id: _} = tool) do
-    name = infer_tool_name(tool)
-    response = safe_decode(c)
-
     %{
       role: "function",
-      parts: [%{"functionResponse" => %{"name" => name, "response" => response}}]
+      parts: [
+        %{"functionResponse" => %{"name" => infer_tool_name(tool), "response" => safe_decode(c)}}
+      ]
     }
   end
 
@@ -205,12 +206,11 @@ defmodule LangEx.LLM.Gemini do
     }
 
   defp format_content(%{tool_call_id: _, content: c} = tool) do
-    name = infer_tool_name(tool)
-    response = safe_decode(c)
-
     %{
       role: "function",
-      parts: [%{"functionResponse" => %{"name" => name, "response" => response}}]
+      parts: [
+        %{"functionResponse" => %{"name" => infer_tool_name(tool), "response" => safe_decode(c)}}
+      ]
     }
   end
 
@@ -226,14 +226,16 @@ defmodule LangEx.LLM.Gemini do
   defp infer_tool_name(_), do: "unknown"
 
   defp safe_decode(c) when is_binary(c) do
-    case Jason.decode(c) do
-      {:ok, map} when is_map(map) -> map
-      _ -> %{"result" => c}
-    end
+    c
+    |> Jason.decode()
+    |> to_result_map(c)
   end
 
   defp safe_decode(c), do: %{"result" => inspect(c)}
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+  defp to_result_map({:ok, map}, _raw) when is_map(map), do: map
+  defp to_result_map(_, raw), do: %{"result" => raw}
+
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 end

@@ -13,11 +13,14 @@ defmodule LangEx.Application do
   end
 
   defp redix_child do
-    if Code.ensure_loaded?(Redix) do
-      redis_url = Application.get_env(:lang_ex, :redis_url, "redis://localhost:6379")
-      [Redix.child_spec({redis_url, name: LangEx.Redix})]
-    else
-      []
-    end
+    Code.ensure_loaded?(Redix)
+    |> redix_child_spec()
   end
+
+  defp redix_child_spec(true) do
+    redis_url = Application.get_env(:lang_ex, :redis_url, "redis://localhost:6379")
+    [Redix.child_spec({redis_url, name: LangEx.Redix})]
+  end
+
+  defp redix_child_spec(false), do: []
 end

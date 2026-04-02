@@ -24,13 +24,13 @@ defmodule LangEx do
       {:ok, result} = LangEx.invoke(graph, %{messages: [Message.human("World")]})
   """
 
-  alias LangEx.CompiledGraph
+  alias LangEx.Graph.Compiled
 
   @doc "Executes a compiled graph with the given input state."
-  @spec invoke(CompiledGraph.t(), map() | LangEx.Types.Command.t(), keyword()) ::
+  @spec invoke(Compiled.t(), map() | LangEx.Command.t(), keyword()) ::
           {:ok, map()} | {:interrupt, term(), map()} | {:error, term()}
-  defdelegate invoke(graph, input, opts \\ []), to: CompiledGraph
+  defdelegate invoke(graph, input, opts \\ []), to: Compiled
 
   @doc "Returns a lazy stream of execution events from the compiled graph."
-  defdelegate stream(graph, input, opts \\ []), to: LangEx.Stream
+  defdelegate stream(graph, input, opts \\ []), to: LangEx.Graph.Stream
 end

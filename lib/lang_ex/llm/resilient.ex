@@ -33,8 +33,6 @@ defmodule LangEx.LLM.Resilient do
 
   alias LangEx.LLM
 
-  require Logger
-
   @default_max_retries 3
   @default_retry_base_ms 3_000
 
@@ -46,11 +44,13 @@ defmodule LangEx.LLM.Resilient do
   """
   @spec chat(module(), [LLM.message()], keyword()) :: LLM.chat_result()
   def chat(provider, messages, opts) do
-    case chat_with_usage(provider, messages, opts) do
-      {:ok, ai, _usage} -> {:ok, ai}
-      {:error, _} = err -> err
-    end
+    provider
+    |> chat_with_usage(messages, opts)
+    |> drop_usage()
   end
+
+  defp drop_usage({:ok, ai, _usage}), do: {:ok, ai}
+  defp drop_usage({:error, _} = err), do: err
 
   @doc """
   Like `chat/3` but returns `{:ok, %Message.AI{}, usage_map}` with token
@@ -59,10 +59,19 @@ defmodule LangEx.LLM.Resilient do
   @spec chat_with_usage(module(), [LLM.message()], keyword()) ::
           LLM.chat_with_usage_result() | LLM.chat_result()
   def chat_with_usage(provider, messages, opts) do
-    do_chat(provider, messages, opts, 0)
+    chat_attempt(provider, messages, opts, 0)
   end
 
-  defp do_chat(provider, messages, opts, attempt) do
+  defp chat_attempt(provider, messages, opts, attempt) do
+    {config, provider_opts} = split_resilient_opts(opts)
+    start = System.monotonic_time(:millisecond)
+
+    provider
+    |> call_provider(messages, provider_opts)
+    |> handle_chat_result(provider, messages, config, attempt, start)
+  end
+
+  defp split_resilient_opts(opts) do
     {max_retries, opts} = Keyword.pop(opts, :max_retries, @default_max_retries)
     {retry_base_ms, opts} = Keyword.pop(opts, :retry_base_ms, @default_retry_base_ms)
     {retryable_fn, opts} = Keyword.pop(opts, :retryable?, &default_retryable?/1)
@@ -71,67 +80,94 @@ defmodule LangEx.LLM.Resilient do
     {on_error, opts} = Keyword.pop(opts, :on_error)
     {fallback, opts} = Keyword.pop(opts, :fallback)
 
-    start = System.monotonic_time(:millisecond)
+    config = %{
+      max_retries: max_retries,
+      retry_base_ms: retry_base_ms,
+      retryable_fn: retryable_fn,
+      on_success: on_success,
+      on_retry: on_retry,
+      on_error: on_error,
+      fallback: fallback
+    }
 
-    case call_provider(provider, messages, opts) do
-      {:ok, ai, usage} ->
-        elapsed = System.monotonic_time(:millisecond) - start
-        if on_success, do: on_success.(attempt, elapsed, ai, usage)
-        {:ok, ai, Map.put(usage, :duration_ms, elapsed)}
-
-      {:error, reason} when attempt < max_retries ->
-        elapsed = System.monotonic_time(:millisecond) - start
-
-        if retryable_fn.(reason) do
-          wait = retry_base_ms * (attempt + 1)
-          if on_retry, do: on_retry.(attempt, elapsed, wait, reason)
-          Process.sleep(wait)
-
-          retry_opts =
-            opts ++
-              [
-                max_retries: max_retries,
-                retry_base_ms: retry_base_ms,
-                retryable?: retryable_fn,
-                on_success: on_success,
-                on_retry: on_retry,
-                on_error: on_error,
-                fallback: fallback
-              ]
-
-          do_chat(provider, messages, retry_opts, attempt + 1)
-        else
-          handle_final_error(reason, elapsed, attempt, on_error, fallback)
-        end
-
-      {:error, reason} ->
-        elapsed = System.monotonic_time(:millisecond) - start
-        handle_final_error(reason, elapsed, attempt, on_error, fallback)
-    end
+    {config, opts}
   end
+
+  defp handle_chat_result({:ok, ai, usage}, _provider, _messages, config, attempt, start) do
+    elapsed = System.monotonic_time(:millisecond) - start
+    invoke_callback(config.on_success, [attempt, elapsed, ai, usage])
+    {:ok, ai, Map.put(usage, :duration_ms, elapsed)}
+  end
+
+  defp handle_chat_result({:error, reason}, provider, messages, config, attempt, start)
+       when attempt < config.max_retries do
+    elapsed = System.monotonic_time(:millisecond) - start
+
+    attempt_retry(
+      config.retryable_fn.(reason),
+      reason,
+      provider,
+      messages,
+      config,
+      attempt,
+      elapsed
+    )
+  end
+
+  defp handle_chat_result({:error, reason}, _provider, _messages, config, attempt, start) do
+    elapsed = System.monotonic_time(:millisecond) - start
+    invoke_callback(config.on_error, [attempt, elapsed, reason])
+    apply_fallback(config.fallback, reason, elapsed)
+  end
+
+  defp attempt_retry(true, reason, provider, messages, config, attempt, elapsed) do
+    wait = config.retry_base_ms * (attempt + 1)
+    invoke_callback(config.on_retry, [attempt, elapsed, wait, reason])
+    Process.sleep(wait)
+    chat_attempt(provider, messages, rebuild_opts(config), attempt + 1)
+  end
+
+  defp attempt_retry(false, reason, _provider, _messages, config, attempt, elapsed) do
+    invoke_callback(config.on_error, [attempt, elapsed, reason])
+    apply_fallback(config.fallback, reason, elapsed)
+  end
+
+  defp rebuild_opts(config) do
+    [
+      max_retries: config.max_retries,
+      retry_base_ms: config.retry_base_ms,
+      retryable?: config.retryable_fn,
+      on_success: config.on_success,
+      on_retry: config.on_retry,
+      on_error: config.on_error,
+      fallback: config.fallback
+    ]
+  end
+
+  defp invoke_callback(nil, _args), do: :ok
+  defp invoke_callback(fun, args), do: apply(fun, args)
+
+  defp apply_fallback(nil, reason, _elapsed), do: {:error, reason}
+
+  defp apply_fallback(fun, _reason, elapsed) when is_function(fun, 0),
+    do: {:ok, fun.(), %{input_tokens: 0, output_tokens: 0, duration_ms: elapsed}}
 
   defp call_provider(provider, messages, opts) do
-    if function_exported?(provider, :chat_with_usage, 2) do
-      provider.chat_with_usage(messages, opts)
-    else
-      case provider.chat(messages, opts) do
-        {:ok, ai} -> {:ok, ai, %{input_tokens: 0, output_tokens: 0}}
-        {:error, _} = err -> err
-      end
-    end
+    provider
+    |> function_exported?(:chat_with_usage, 2)
+    |> call_with_arity(provider, messages, opts)
   end
 
-  defp handle_final_error(reason, elapsed, attempt, on_error, fallback) do
-    if on_error, do: on_error.(attempt, elapsed, reason)
+  defp call_with_arity(true, provider, messages, opts),
+    do: provider.chat_with_usage(messages, opts)
 
-    case fallback do
-      nil ->
-        {:error, reason}
-
-      fun when is_function(fun, 0) ->
-        {:ok, fun.(), %{input_tokens: 0, output_tokens: 0, duration_ms: elapsed}}
-    end
+  defp call_with_arity(false, provider, messages, opts) do
+    provider.chat(messages, opts)
+    |> with_zero_usage()
   end
+
+  defp with_zero_usage({:ok, ai}), do: {:ok, ai, %{input_tokens: 0, output_tokens: 0}}
+  defp with_zero_usage({:error, _} = err), do: err
 
   @doc """
   Default retryable error classifier.
@@ -152,13 +188,11 @@ defmodule LangEx.LLM.Resilient do
   """
   @spec format_error(term()) :: String.t()
   def format_error({status, %{"error" => %{"message" => msg}}}) when is_binary(msg) do
-    short = msg |> String.split("\n") |> hd() |> String.slice(0, 120)
-    "HTTP #{status}: #{short}"
+    "HTTP #{status}: #{msg |> String.split("\n") |> hd() |> String.slice(0, 120)}"
   end
 
   def format_error({status, body}) when is_integer(status) do
-    short = body |> inspect() |> String.slice(0, 200)
-    "HTTP #{status}: #{short}"
+    "HTTP #{status}: #{body |> inspect() |> String.slice(0, 200)}"
   end
 
   def format_error(other), do: inspect(other)

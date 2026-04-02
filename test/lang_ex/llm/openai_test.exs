@@ -2,7 +2,8 @@ defmodule LangEx.LLM.OpenAITest do
   use ExUnit.Case, async: false
   use Mimic
 
-  alias LangEx.{Message, Tool}
+  alias LangEx.Message
+  alias LangEx.Tool
 
   @weather_tool %Tool{
     name: "get_weather",

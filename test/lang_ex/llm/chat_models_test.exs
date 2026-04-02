@@ -1,49 +1,49 @@
-defmodule LangEx.ChatModelsTest do
+defmodule LangEx.LLM.RegistryTest do
   use ExUnit.Case, async: false
   use Mimic
 
-  alias LangEx.ChatModels
+  alias LangEx.LLM.Registry
   alias LangEx.Graph
   alias LangEx.Message
 
   describe "init_chat_model/2" do
     test "resolves OpenAI by model string" do
-      assert {LangEx.LLM.OpenAI, [model: "gpt-4o"]} = ChatModels.init_chat_model("gpt-4o")
+      assert {LangEx.LLM.OpenAI, [model: "gpt-4o"]} = Registry.init_chat_model("gpt-4o")
     end
 
     test "resolves Anthropic by model string" do
       assert {LangEx.LLM.Anthropic, [model: "claude-sonnet-4-20250514"]} =
-               ChatModels.init_chat_model("claude-sonnet-4-20250514")
+               Registry.init_chat_model("claude-sonnet-4-20250514")
     end
 
     test "resolves Gemini by model string" do
       assert {LangEx.LLM.Gemini, [model: "gemini-2.5-flash"]} =
-               ChatModels.init_chat_model("gemini-2.5-flash")
+               Registry.init_chat_model("gemini-2.5-flash")
     end
 
     test "resolves by provider atom" do
-      assert {LangEx.LLM.OpenAI, []} = ChatModels.init_chat_model(:openai)
+      assert {LangEx.LLM.OpenAI, []} = Registry.init_chat_model(:openai)
 
       assert {LangEx.LLM.Anthropic, [temperature: 0.5]} =
-               ChatModels.init_chat_model(:anthropic, temperature: 0.5)
+               Registry.init_chat_model(:anthropic, temperature: 0.5)
     end
 
     test "passes through extra opts with model string" do
       assert {LangEx.LLM.OpenAI, opts} =
-               ChatModels.init_chat_model("gpt-4o", temperature: 0.3, max_tokens: 512)
+               Registry.init_chat_model("gpt-4o", temperature: 0.3, max_tokens: 512)
 
       assert %{model: "gpt-4o", temperature: 0.3, max_tokens: 512} = Map.new(opts)
     end
 
     test "raises on unknown model prefix" do
       assert_raise ArgumentError, ~r/cannot infer provider/, fn ->
-        ChatModels.init_chat_model("unknown-model-xyz")
+        Registry.init_chat_model("unknown-model-xyz")
       end
     end
 
     test "raises on unknown provider atom" do
       assert_raise ArgumentError, ~r/unknown provider/, fn ->
-        ChatModels.init_chat_model(:nonexistent)
+        Registry.init_chat_model(:nonexistent)
       end
     end
   end
@@ -56,9 +56,9 @@ defmodule LangEx.ChatModelsTest do
         def chat(_messages, _opts), do: {:ok, LangEx.Message.ai("groq response")}
       end
 
-      ChatModels.register_provider(:groq, FakeGroq)
-      assert {FakeGroq, []} = ChatModels.init_chat_model(:groq)
-      assert %{groq: FakeGroq} = Map.take(ChatModels.list_providers(), [:groq])
+      Registry.register_provider(:groq, FakeGroq)
+      assert {FakeGroq, []} = Registry.init_chat_model(:groq)
+      assert %{groq: FakeGroq} = Map.take(Registry.list_providers(), [:groq])
     end
 
     test "register_prefix enables model-string inference for custom provider" do
@@ -68,10 +68,10 @@ defmodule LangEx.ChatModelsTest do
         def chat(_messages, _opts), do: {:ok, LangEx.Message.ai("ollama response")}
       end
 
-      ChatModels.register_provider(:ollama, FakeOllama)
-      ChatModels.register_prefix("llama-", :ollama)
+      Registry.register_provider(:ollama, FakeOllama)
+      Registry.register_prefix("llama-", :ollama)
 
-      assert {FakeOllama, [model: "llama-3.3-70b"]} = ChatModels.init_chat_model("llama-3.3-70b")
+      assert {FakeOllama, [model: "llama-3.3-70b"]} = Registry.init_chat_model("llama-3.3-70b")
     end
   end
 
@@ -83,7 +83,7 @@ defmodule LangEx.ChatModelsTest do
 
       {:ok, result} =
         Graph.new(messages: {[], &Message.add_messages/2})
-        |> Graph.add_node(:llm, LangEx.ChatModel.node(model: "gpt-4o"))
+        |> Graph.add_node(:llm, LangEx.LLM.ChatModel.node(model: "gpt-4o"))
         |> Graph.add_edge(:__start__, :llm)
         |> Graph.add_edge(:llm, :__end__)
         |> Graph.compile()
@@ -100,7 +100,7 @@ defmodule LangEx.ChatModelsTest do
 
   describe "list_providers/0" do
     test "includes built-in providers" do
-      providers = ChatModels.list_providers()
+      providers = Registry.list_providers()
 
       assert %{
                openai: LangEx.LLM.OpenAI,

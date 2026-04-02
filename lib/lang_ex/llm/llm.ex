@@ -31,15 +31,15 @@ defmodule LangEx.LLM do
   Then register it so model-string resolution and `ChatModel.node` work:
 
       # In your application startup or config:
-      LangEx.ChatModels.register_provider(:groq, MyApp.LLM.Groq)
-      LangEx.ChatModels.register_prefix("llama-", :groq)
+      LangEx.LLM.Registry.register_provider(:groq, MyApp.LLM.Groq)
+      LangEx.LLM.Registry.register_prefix("llama-", :groq)
 
   Or use it directly without registration:
 
       MyApp.LLM.Groq.chat(messages, model: "llama-3.3-70b", api_key: "...")
 
       # In a graph node:
-      ChatModel.node(provider: MyApp.LLM.Groq, model: "llama-3.3-70b")
+      LangEx.LLM.ChatModel.node(provider: MyApp.LLM.Groq, model: "llama-3.3-70b")
 
   ## Using `LangEx.Config` for Custom Providers
 
@@ -61,7 +61,7 @@ defmodule LangEx.LLM do
     to its native format by accessing the struct fields directly.
 
   When the model requests tool calls the adapter returns
-  `{:ok, %Message.AI{tool_calls: [...]}}`. Use `LangEx.ToolNode` in your
+  `{:ok, %Message.AI{tool_calls: [...]}}`. Use `LangEx.Tool.Node` in your
   graph to execute tool calls and feed results back to the LLM.
   """
 

@@ -16,9 +16,11 @@ defmodule LangEx.Interrupt do
   """
   @spec interrupt(term()) :: term()
   def interrupt(payload \\ nil) do
-    case Process.get(:lang_ex_resume) do
-      nil -> throw({:lang_ex_interrupt, payload})
-      value -> value
-    end
+    :lang_ex_resume
+    |> Process.get()
+    |> resolve_resume(payload)
   end
+
+  defp resolve_resume(nil, payload), do: throw({:lang_ex_interrupt, payload})
+  defp resolve_resume(value, _payload), do: value
 end

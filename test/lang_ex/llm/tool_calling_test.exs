@@ -2,7 +2,11 @@ defmodule LangEx.LLM.ToolCallingTest do
   use ExUnit.Case, async: false
   use Mimic
 
-  alias LangEx.{ChatModel, Graph, Message, Tool, ToolNode}
+  alias LangEx.LLM.ChatModel
+  alias LangEx.Graph
+  alias LangEx.Message
+  alias LangEx.Tool
+  alias LangEx.Tool.Node, as: ToolNode
 
   @weather_tool %Tool{
     name: "get_weather",

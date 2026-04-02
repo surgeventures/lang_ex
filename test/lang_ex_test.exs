@@ -5,15 +5,19 @@ defmodule LangExTest do
   alias LangEx.Message
 
   test "end-to-end: classify-and-respond agent with conditional routing" do
+    classify_content = fn
+      "weather" -> "weather"
+      "hello" -> "greeting"
+      _ -> "unknown"
+    end
+
     classifier = fn state ->
-      last_msg = List.last(state.messages)
+      content = List.last(state.messages).content
 
       intent =
-        cond do
-          String.contains?(last_msg.content, "weather") -> "weather"
-          String.contains?(last_msg.content, "hello") -> "greeting"
-          true -> "unknown"
-        end
+        ["weather", "hello"]
+        |> Enum.find(&String.contains?(content, &1))
+        |> classify_content.()
 
       %{intent: intent}
     end

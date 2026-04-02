@@ -104,14 +104,12 @@ defmodule SupportTriage do
     config = [thread_id: thread_id, repo: Keyword.get(opts, :repo, @repo)]
 
     {:ok, result} =
-      LangEx.invoke(graph, %LangEx.Types.Command{resume: approved}, config: config)
+      LangEx.invoke(graph, %LangEx.Command{resume: approved}, config: config)
 
     IO.puts("\n--- Resumed (approved: #{approved}) ---")
     IO.puts(result.result)
     result
   end
-
-  # --- Node functions ---
 
   defp route(state) do
     system = Message.system("""

@@ -14,8 +14,12 @@ defmodule IncidentResponder.Graph do
       escalate -> __end__
   """
 
-  alias LangEx.{Graph, Message, MessagesState, ToolNode}
-  alias IncidentResponder.{Prompts, Tools}
+  alias IncidentResponder.Prompts
+  alias IncidentResponder.Tools
+  alias LangEx.Graph
+  alias LangEx.Message
+  alias LangEx.MessagesState
+  alias LangEx.Tool.Node, as: ToolNode
 
   @model "gpt-4o-mini"
   @base_url "https://openrouter.ai/api/v1"
@@ -60,8 +64,6 @@ defmodule IncidentResponder.Graph do
     |> Graph.add_edge(:escalate, :__end__)
     |> Graph.compile(opts)
   end
-
-  # --- Node functions ---
 
   defp greet(_state) do
     ai =
@@ -149,7 +151,7 @@ defmodule IncidentResponder.Graph do
     {messages, final_ai} = run_tool_loop(ai, conversation, tools, tool_node_fn, state)
 
     action = detect_action_readiness(final_ai, state)
-    updated_history = maybe_record_action(final_ai.content, history)
+    updated_history = record_action(final_ai.content, history)
 
     %{
       messages: messages ++ [final_ai],
@@ -253,8 +255,6 @@ defmodule IncidentResponder.Graph do
     %{messages: [msg], last_response: msg.content, phase: :escalate}
   end
 
-  # --- Routing functions ---
-
   defp route_intent(state), do: to_string(state.phase)
 
   defp action_ready(state) do
@@ -270,8 +270,6 @@ defmodule IncidentResponder.Graph do
       _ -> "failure"
     end
   end
-
-  # --- LLM call with retry ---
 
   defp chat_with_retry(messages, opts, attempt \\ 0) do
     case LangEx.LLM.OpenAI.chat(messages, [{:base_url, @base_url} | opts]) do
@@ -304,16 +302,20 @@ defmodule IncidentResponder.Graph do
   defp format_error({status, _}), do: "HTTP #{status}"
   defp format_error(other), do: inspect(other)
 
-  # --- Helpers ---
+  @intent_patterns [
+    {"incident", ~w(incident alert outage down)},
+    {"question", ~w(question)},
+    {"goodbye", ~w(goodbye bye done resolved)}
+  ]
 
   defp normalize_intent(text) do
-    cond do
-      text =~ "incident" or text =~ "alert" or text =~ "outage" or text =~ "down" -> "incident"
-      text =~ "question" -> "question"
-      text =~ "goodbye" or text =~ "bye" or text =~ "done" or text =~ "resolved" -> "goodbye"
-      true -> "question"
-    end
+    @intent_patterns
+    |> Enum.find(fn {_, patterns} -> Enum.any?(patterns, &(text =~ &1)) end)
+    |> extract_intent()
   end
+
+  defp extract_intent({intent, _patterns}), do: intent
+  defp extract_intent(nil), do: "question"
 
   defp recent_context(state, max_messages) do
     state.messages
@@ -333,33 +335,40 @@ defmodule IncidentResponder.Graph do
   defp has_content?(%{content: c}) when is_binary(c), do: true
   defp has_content?(_), do: false
 
-  defp maybe_record_action(content, history) when is_binary(content) do
-    lower = String.downcase(content)
-
-    is_action =
-      lower =~ "restarted" or lower =~ "paged" or lower =~ "status page updated" or
-        lower =~ "rolling restart" or lower =~ "incident created"
-
-    if is_action, do: history ++ [content], else: history
+  defp record_action(content, history) when is_binary(content) do
+    content
+    |> String.downcase()
+    |> action_content?()
+    |> append_action(content, history)
   end
 
-  defp maybe_record_action(_, history), do: history
+  defp record_action(_, history), do: history
+
+  defp action_content?(lower) do
+    lower =~ "restarted" or lower =~ "paged" or lower =~ "status page updated" or
+      lower =~ "rolling restart" or lower =~ "incident created"
+  end
+
+  defp append_action(true, content, history), do: history ++ [content]
+  defp append_action(false, _content, history), do: history
 
   defp detect_action_readiness(ai, state) do
-    content = String.downcase(ai.content || "")
-
-    has_confirmation_ask =
-      content =~ "shall i restart" or content =~ "should i restart" or
-        content =~ "want me to restart" or content =~ "shall i page" or
-        content =~ "should i page" or content =~ "want me to page" or
-        content =~ "shall i update" or content =~ "confirm"
-
     existing = state.action || %{}
 
-    if has_confirmation_ask do
-      Map.put(existing, :ready, false)
-    else
-      existing
-    end
+    ai.content
+    |> Kernel.||("")
+    |> String.downcase()
+    |> confirmation_ask?()
+    |> apply_readiness(existing)
   end
+
+  defp confirmation_ask?(content) do
+    content =~ "shall i restart" or content =~ "should i restart" or
+      content =~ "want me to restart" or content =~ "shall i page" or
+      content =~ "should i page" or content =~ "want me to page" or
+      content =~ "shall i update" or content =~ "confirm"
+  end
+
+  defp apply_readiness(true, existing), do: Map.put(existing, :ready, false)
+  defp apply_readiness(false, existing), do: existing
 end
