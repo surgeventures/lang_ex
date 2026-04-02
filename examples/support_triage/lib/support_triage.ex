@@ -4,7 +4,7 @@ defmodule SupportTriage do
 
   Demonstrates branching, conditional routing, shared state,
   multi-LLM-call orchestration, and human-in-the-loop interrupts
-  using Gemini via the Google adapter.
+  using Claude Opus via the Anthropic adapter.
 
   ## Graph
 
@@ -24,7 +24,7 @@ defmodule SupportTriage do
   alias LangEx.Message
   alias LangEx.MessagesState
 
-  @model "gemini-2.5-flash"
+  @model "claude-opus-4-20250514"
   @checkpointer LangEx.Checkpointer.Postgres
   @repo SupportTriage.Repo
 
@@ -124,7 +124,7 @@ defmodule SupportTriage do
     """)
 
     {:ok, ai_response} =
-      LangEx.LLM.Gemini.chat(
+      LangEx.LLM.Anthropic.chat(
         [system | state.messages],
         model: @model,
         temperature: 0.0,
@@ -178,7 +178,7 @@ defmodule SupportTriage do
     user_messages = Enum.filter(state.messages, &match?(%Message.Human{}, &1))
 
     {:ok, ai_response} =
-      LangEx.LLM.Gemini.chat(
+      LangEx.LLM.Anthropic.chat(
         [Message.system(system_prompt) | user_messages],
         model: @model,
         temperature: 0.3

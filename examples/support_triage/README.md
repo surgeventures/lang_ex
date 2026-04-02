@@ -1,6 +1,6 @@
 # Support Triage Router
 
-A demo app showing LangEx's graph-based orchestration with Gemini, including human-in-the-loop interrupts with Postgres-backed checkpointing.
+A demo app showing LangEx's graph-based orchestration with Claude Opus, including human-in-the-loop interrupts with Postgres-backed checkpointing.
 
 A user drops in a support request, and the graph routes it through one of four specialized branches:
 
@@ -34,7 +34,7 @@ The `approve` node calls `LangEx.Interrupt.interrupt/1`, pausing the graph and s
 cd examples/support_triage
 docker compose up -d
 mix setup
-export GEMINI_API_KEY=...
+export ANTHROPIC_API_KEY=...
 ```
 
 ## Run in iex
@@ -83,5 +83,5 @@ mix test
 - `LangEx.Types.Command{resume: value}` for resuming interrupted graphs
 - `LangEx.Checkpointer.Postgres` for durable state persistence across pause/resume
 - `MessagesState.schema` for pre-built message state with reducer
-- `LangEx.LLM.Gemini.chat/2` for direct LLM calls with custom system prompts
+- `LangEx.LLM.Anthropic.chat/2` for direct LLM calls via Claude Opus
 - Multiple LLM calls orchestrated across a branched graph

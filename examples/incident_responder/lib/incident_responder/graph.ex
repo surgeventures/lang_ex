@@ -21,8 +21,7 @@ defmodule IncidentResponder.Graph do
   alias LangEx.MessagesState
   alias LangEx.Tool.Node, as: ToolNode
 
-  @model "gpt-4o-mini"
-  @base_url "https://openrouter.ai/api/v1"
+  @model "claude-opus-4-20250514"
   @max_retries 2
   @retry_base_ms 2_000
 
@@ -272,7 +271,7 @@ defmodule IncidentResponder.Graph do
   end
 
   defp chat_with_retry(messages, opts, attempt \\ 0) do
-    case LangEx.LLM.OpenAI.chat(messages, [{:base_url, @base_url} | opts]) do
+    case LangEx.LLM.Anthropic.chat(messages, opts) do
       {:ok, ai} ->
         ai
 
