@@ -6,7 +6,7 @@ defmodule SupportTriageTest do
   alias LangEx.Command
 
   defp stub_router(intent) do
-    stub(LangEx.LLM.Gemini, :chat, fn _messages, opts ->
+    stub(LangEx.LLM.Anthropic, :chat, fn _messages, opts ->
       response =
         case {opts[:temperature] == 0.0, intent} do
           {true, _} -> intent

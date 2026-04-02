@@ -58,7 +58,7 @@ All tools return hardcoded fake data — no external services required.
 cd examples/incident_responder
 docker compose up -d
 mix setup
-export OPENROUTER_API_KEY=...
+export ANTHROPIC_API_KEY=...
 ```
 
 Uses Postgres for checkpointing. `docker compose up -d` starts a local Postgres, and `mix setup` creates the database and runs migrations.
@@ -136,5 +136,5 @@ Or use the programmatic API:
 - `LangEx.Interrupt.interrupt/1` for multi-turn conversation
 - `LangEx.Types.Command{resume: message}` for resuming with user input
 - `Graph.add_conditional_edges` for intent-based routing (question vs incident vs goodbye)
-- `LangEx.LLM.OpenAI.chat/2` with OpenRouter for LLM calls
+- `LangEx.LLM.Anthropic.chat/2` for LLM calls via Claude Opus
 - Retry logic with exponential backoff for rate limits
