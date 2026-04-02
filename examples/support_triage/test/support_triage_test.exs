@@ -3,7 +3,7 @@ defmodule SupportTriageTest do
   use Mimic
 
   alias LangEx.Message
-  alias LangEx.Types.Command
+  alias LangEx.Command
 
   defp stub_router(intent) do
     stub(LangEx.LLM.Gemini, :chat, fn _messages, opts ->
@@ -19,8 +19,6 @@ defmodule SupportTriageTest do
       {:ok, Message.ai(response)}
     end)
   end
-
-  # --- Routing tests ---
 
   describe "graph routes to correct branch" do
     test "qa intent classifies and answers" do
@@ -69,8 +67,6 @@ defmodule SupportTriageTest do
                |> LangEx.invoke(%{messages: [Message.human("Everything is broken!")]})
     end
   end
-
-  # --- Interrupt + checkpointer tests (Postgres) ---
 
   describe "escalation with Postgres checkpointer (human-in-the-loop)" do
     test "escalate pauses at approval interrupt, resume completes the graph" do
@@ -127,11 +123,9 @@ defmodule SupportTriageTest do
     end
   end
 
-  # --- Structure tests ---
-
   describe "graph structure" do
     test "build_graph returns a compiled graph with all nodes" do
-      assert %LangEx.CompiledGraph{nodes: nodes} = SupportTriage.build_graph()
+      assert %LangEx.Graph.Compiled{nodes: nodes} = SupportTriage.build_graph()
 
       assert [:approve, :escalate, :extract, :format, :qa, :rewrite, :router] =
                nodes |> Map.keys() |> Enum.sort()

@@ -4,19 +4,18 @@ defmodule LangEx.Graph do
 
   Constructs a graph definition via a pipeline of `add_node`, `add_edge`,
   and `add_conditional_edges` calls, then compiles it into an executable
-  `LangEx.CompiledGraph`.
+  `LangEx.Graph.Compiled`.
   """
 
-  alias LangEx.CompiledGraph
-  alias LangEx.State
+  alias LangEx.Graph.Compiled
+  alias LangEx.Graph.State
 
   defstruct nodes: %{},
             edges: %{},
             conditional_edges: %{},
-            schema: [],
-            entry_point: nil
+            schema: []
 
-  @type node_fn :: (map() -> map() | LangEx.Types.Command.t())
+  @type node_fn :: (map() -> map() | LangEx.Command.t())
 
   @type routing_fn :: (map() -> atom() | String.t())
 
@@ -24,8 +23,7 @@ defmodule LangEx.Graph do
           nodes: %{atom() => node_fn()},
           edges: %{atom() => [atom()]},
           conditional_edges: %{atom() => {routing_fn(), map() | nil}},
-          schema: keyword(),
-          entry_point: atom() | nil
+          schema: keyword()
         }
 
   @doc """
@@ -37,10 +35,10 @@ defmodule LangEx.Graph do
   def new(schema \\ []), do: %__MODULE__{schema: schema}
 
   @doc "Adds a named node with its handler function."
-  @spec add_node(t(), atom(), node_fn() | CompiledGraph.t()) :: t()
-  def add_node(%__MODULE__{} = graph, name, %CompiledGraph{} = subgraph) when is_atom(name) do
+  @spec add_node(t(), atom(), node_fn() | Compiled.t()) :: t()
+  def add_node(%__MODULE__{} = graph, name, %Compiled{} = subgraph) when is_atom(name) do
     add_node(graph, name, fn state ->
-      {:ok, result} = CompiledGraph.invoke(subgraph, state)
+      {:ok, result} = Compiled.invoke(subgraph, state)
       result
     end)
   end
@@ -52,8 +50,7 @@ defmodule LangEx.Graph do
   @doc "Adds a fixed edge from `from` to `to`."
   @spec add_edge(t(), atom(), atom()) :: t()
   def add_edge(%__MODULE__{} = graph, from, to) when is_atom(from) and is_atom(to) do
-    existing = Map.get(graph.edges, from, [])
-    %{graph | edges: Map.put(graph.edges, from, existing ++ [to])}
+    %{graph | edges: Map.update(graph.edges, from, [to], &(&1 ++ [to]))}
   end
 
   @doc """
@@ -87,14 +84,14 @@ defmodule LangEx.Graph do
   Options:
   - `:checkpointer` - module implementing `LangEx.Checkpointer` behaviour
   """
-  @spec compile(t(), keyword()) :: CompiledGraph.t()
+  @spec compile(t(), keyword()) :: Compiled.t()
   def compile(%__MODULE__{} = graph, opts \\ []) do
     :ok = validate_entry_point(graph)
     :ok = validate_edge_targets(graph)
 
     {initial_state, reducers} = State.parse_schema(graph.schema)
 
-    %CompiledGraph{
+    %Compiled{
       nodes: graph.nodes,
       edges: graph.edges,
       conditional_edges: graph.conditional_edges,

@@ -2,7 +2,7 @@ defmodule LangEx.Features.SendTest do
   use ExUnit.Case, async: true
 
   alias LangEx.Graph
-  alias LangEx.Types.Send
+  alias LangEx.Send
 
   describe "Send fan-out" do
     test "conditional edge returns Send structs for dynamic dispatch" do

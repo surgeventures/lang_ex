@@ -3,7 +3,7 @@ defmodule IncidentResponder.Tools do
   Stubbed DevOps tools using the `%LangEx.Tool{function: ...}` pattern.
 
   Each tool logs its invocation and returns realistic fake data.
-  Passed directly to `LangEx.ToolNode.node/2`.
+  Passed directly to `LangEx.Tool.Node.node/2`.
   """
 
   def tool_declarations do
@@ -157,8 +157,6 @@ defmodule IncidentResponder.Tools do
       end
     }
   end
-
-  # --- Stubbed data ---
 
   defp fake_health("api-gateway") do
     %{

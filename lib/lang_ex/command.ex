@@ -1,4 +1,4 @@
-defmodule LangEx.Types.Command do
+defmodule LangEx.Command do
   @moduledoc """
   Combines a state update with a routing directive.
   Returned from node functions to both update state and control flow.

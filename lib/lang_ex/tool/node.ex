@@ -1,4 +1,4 @@
-defmodule LangEx.ToolNode do
+defmodule LangEx.Tool.Node do
   @moduledoc """
   Graph node for executing tool calls from AI messages.
 
@@ -20,8 +20,8 @@ defmodule LangEx.ToolNode do
       graph =
         Graph.new(messages: {[], &Message.add_messages/2})
         |> Graph.add_node(:agent, ChatModel.node(model: "gpt-4o", tools: tools))
-        |> Graph.add_node(:tools, LangEx.ToolNode.node(tools))
-        |> Graph.add_conditional_edges(:agent, &LangEx.ToolNode.tools_condition/1, %{
+        |> Graph.add_node(:tools, LangEx.Tool.Node.node(tools))
+        |> Graph.add_conditional_edges(:agent, &LangEx.Tool.Node.tools_condition/1, %{
           tools: :tools,
           __end__: :__end__
         })
@@ -88,13 +88,11 @@ defmodule LangEx.ToolNode do
     tools_by_name = Map.new(tools, fn %Tool{name: name} = tool -> {name, tool} end)
 
     fn state ->
-      messages = Map.fetch!(state, messages_key)
-      tool_calls = extract_tool_calls(messages)
-
-      results =
-        execute_all(tool_calls, tools_by_name, state, handle_errors, wrapper)
-
-      %{messages_key => results}
+      state
+      |> Map.fetch!(messages_key)
+      |> extract_tool_calls()
+      |> then(&execute_all(&1, tools_by_name, state, handle_errors, wrapper))
+      |> then(&%{messages_key => &1})
     end
   end
 
@@ -121,44 +119,44 @@ defmodule LangEx.ToolNode do
   defp has_tool_calls?(%Message.AI{tool_calls: [_ | _]}), do: :tools
   defp has_tool_calls?(_), do: :__end__
 
-  # --- Execution pipeline ---
-
   defp extract_tool_calls(messages) do
-    case List.last(messages) do
-      %Message.AI{tool_calls: calls} when calls != [] -> calls
-      _ -> []
-    end
+    messages
+    |> List.last()
+    |> last_tool_calls()
   end
+
+  defp last_tool_calls(%Message.AI{tool_calls: calls}) when calls != [], do: calls
+  defp last_tool_calls(_), do: []
 
   defp execute_all(tool_calls, tools_by_name, state, handle_errors, wrapper) do
     old_trap = Process.flag(:trap_exit, true)
 
     try do
-      tasks =
-        Enum.map(tool_calls, fn call ->
-          Task.async(fn -> run_one(call, tools_by_name, state, handle_errors, wrapper) end)
-        end)
-
-      Enum.map(tasks, fn task ->
-        case Task.yield(task, 30_000) || Task.shutdown(task) do
-          {:ok, result} ->
-            result
-
-          {:exit, {exception, stacktrace}} when is_exception(exception) ->
-            reraise exception, stacktrace
-
-          {:exit, reason} ->
-            exit(reason)
-
-          nil ->
-            raise "Tool execution timed out"
-        end
+      tool_calls
+      |> Enum.map(fn call ->
+        Task.async(fn -> run_one(call, tools_by_name, state, handle_errors, wrapper) end)
       end)
+      |> Enum.map(&await_task_result/1)
     after
       Process.flag(:trap_exit, old_trap)
       drain_exits()
     end
   end
+
+  defp await_task_result(task) do
+    task
+    |> Task.yield(30_000)
+    |> Kernel.||(Task.shutdown(task))
+    |> handle_task_outcome()
+  end
+
+  defp handle_task_outcome({:ok, result}), do: result
+
+  defp handle_task_outcome({:exit, {exception, stacktrace}}) when is_exception(exception),
+    do: reraise(exception, stacktrace)
+
+  defp handle_task_outcome({:exit, reason}), do: exit(reason)
+  defp handle_task_outcome(nil), do: raise("Tool execution timed out")
 
   defp drain_exits do
     receive do
@@ -169,102 +167,105 @@ defmodule LangEx.ToolNode do
   end
 
   defp run_one(call, tools_by_name, state, handle_errors, wrapper) do
-    tool = Map.get(tools_by_name, call.name)
-
     request = %ToolCallRequest{
       tool_call: call,
-      tool: tool,
+      tool: Map.get(tools_by_name, call.name),
       state: state,
       store: nil
     }
 
-    execute_fn = fn req ->
-      do_execute(req, tools_by_name, handle_errors)
-    end
-
-    case wrapper do
-      nil ->
-        execute_fn.(request)
-
-      wrap when is_function(wrap, 2) ->
-        try do
-          wrap.(request, execute_fn)
-        rescue
-          e ->
-            if handle_errors == false, do: reraise(e, __STACKTRACE__)
-            format_error(e, call, handle_errors)
-        end
-    end
+    dispatch_tool_call(
+      request,
+      fn req -> execute_tool(req, tools_by_name, handle_errors) end,
+      wrapper,
+      handle_errors,
+      call
+    )
   end
 
-  defp do_execute(%ToolCallRequest{tool: nil, tool_call: call}, tools_by_name, handle_errors) do
-    case handle_errors do
-      false ->
-        available = tools_by_name |> Map.keys() |> Enum.join(", ")
+  defp dispatch_tool_call(request, execute_fn, nil, _handle_errors, _call),
+    do: execute_fn.(request)
 
-        raise ArgumentError,
-              :io_lib.format(@invalid_tool_template, [call.name, available]) |> to_string()
-
-      _ ->
-        invalid_tool_message(call, tools_by_name)
-    end
+  defp dispatch_tool_call(request, execute_fn, wrap, handle_errors, call)
+       when is_function(wrap, 2) do
+    wrap.(request, execute_fn)
+  rescue
+    e ->
+      propagate_error(handle_errors, e, __STACKTRACE__)
+      format_error(e, call, handle_errors)
   end
 
-  defp do_execute(
+  defp execute_tool(%ToolCallRequest{tool: nil, tool_call: call}, tools_by_name, false) do
+    raise ArgumentError,
+          tools_by_name
+          |> Map.keys()
+          |> Enum.join(", ")
+          |> then(&:io_lib.format(@invalid_tool_template, [call.name, &1]))
+          |> to_string()
+  end
+
+  defp execute_tool(%ToolCallRequest{tool: nil, tool_call: call}, tools_by_name, _handle_errors),
+    do: invalid_tool_message(call, tools_by_name)
+
+  defp execute_tool(
          %ToolCallRequest{tool: tool, tool_call: call, state: state},
          _tools_by_name,
          handle_errors
        ) do
-    try do
-      result = call_function(tool.function, call.args, state, call.id)
-      Message.tool(encode_result(result), call.id)
-    rescue
-      e ->
-        if handle_errors == false, do: reraise(e, __STACKTRACE__)
-        format_error(e, call, handle_errors)
-    end
+    tool.function
+    |> call_function(call.args, state, call.id)
+    |> encode_result()
+    |> Message.tool(call.id)
+  rescue
+    e ->
+      propagate_error(handle_errors, e, __STACKTRACE__)
+      format_error(e, call, handle_errors)
   end
+
+  defp propagate_error(false, e, stacktrace), do: reraise(e, stacktrace)
+  defp propagate_error(_, _e, _stacktrace), do: :ok
 
   defp call_function(fun, args, state, tool_call_id) do
-    case Function.info(fun, :arity) do
-      {:arity, 1} -> fun.(args)
-      {:arity, 2} -> fun.(args, %{state: state, store: nil, tool_call_id: tool_call_id})
-    end
+    fun
+    |> Function.info(:arity)
+    |> dispatch_function(fun, args, state, tool_call_id)
   end
 
-  defp format_error(exception, call, handle_errors) do
-    case handle_errors do
-      true ->
-        error_content =
-          :io_lib.format(@tool_error_template, [Exception.message(exception)])
-          |> to_string()
+  defp dispatch_function({:arity, 1}, fun, args, _state, _tool_call_id), do: fun.(args)
 
-        Message.tool(error_content, call.id)
+  defp dispatch_function({:arity, 2}, fun, args, state, tool_call_id),
+    do: fun.(args, %{state: state, store: nil, tool_call_id: tool_call_id})
 
-      message when is_binary(message) ->
-        Message.tool(message, call.id)
-
-      handler when is_function(handler, 1) ->
-        Message.tool(handler.(exception), call.id)
-    end
+  defp format_error(exception, call, true) do
+    @tool_error_template
+    |> :io_lib.format([Exception.message(exception)])
+    |> to_string()
+    |> Message.tool(call.id)
   end
+
+  defp format_error(_exception, call, message) when is_binary(message),
+    do: Message.tool(message, call.id)
+
+  defp format_error(exception, call, handler) when is_function(handler, 1),
+    do: Message.tool(handler.(exception), call.id)
 
   defp invalid_tool_message(call, tools_by_name) do
-    available = tools_by_name |> Map.keys() |> Enum.join(", ")
-
-    content =
-      :io_lib.format(@invalid_tool_template, [call.name, available])
-      |> to_string()
-
-    Message.tool(content, call.id)
+    tools_by_name
+    |> Map.keys()
+    |> Enum.join(", ")
+    |> then(&:io_lib.format(@invalid_tool_template, [call.name, &1]))
+    |> to_string()
+    |> Message.tool(call.id)
   end
 
   defp encode_result(result) when is_binary(result), do: result
 
   defp encode_result(result) do
-    case Jason.encode(result) do
-      {:ok, json} -> json
-      {:error, _} -> inspect(result)
-    end
+    result
+    |> Jason.encode()
+    |> format_encoded(result)
   end
+
+  defp format_encoded({:ok, json}, _result), do: json
+  defp format_encoded({:error, _}, result), do: inspect(result)
 end

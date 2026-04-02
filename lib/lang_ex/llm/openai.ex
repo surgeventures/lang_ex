@@ -9,7 +9,7 @@ defmodule LangEx.LLM.OpenAI do
 
   Pass `:tools` (list of `%LangEx.Tool{}`) to enable tool calling.
   The adapter returns `{:ok, %Message.AI{tool_calls: [...]}}` when the
-  model requests tool calls. Use `LangEx.ToolNode` to execute them.
+  model requests tool calls. Use `LangEx.Tool.Node` to execute them.
 
       LangEx.LLM.OpenAI.chat(messages,
         model: "gpt-4o-mini",
@@ -27,11 +27,13 @@ defmodule LangEx.LLM.OpenAI do
 
   @impl true
   def chat(messages, opts \\ []) do
-    case chat_with_usage(messages, opts) do
-      {:ok, ai, _usage} -> {:ok, ai}
-      {:error, _} = err -> err
-    end
+    messages
+    |> chat_with_usage(opts)
+    |> drop_usage()
   end
+
+  defp drop_usage({:ok, ai, _usage}), do: {:ok, ai}
+  defp drop_usage({:error, _} = err), do: err
 
   @impl true
   def chat_with_usage(messages, opts \\ []) do
@@ -41,10 +43,10 @@ defmodule LangEx.LLM.OpenAI do
     base_url = Keyword.get(opts, :base_url, @base_url)
 
     %{model: model, messages: Enum.map(messages, &format_message/1)}
-    |> maybe_put(:temperature, opts[:temperature])
-    |> maybe_put(:max_tokens, opts[:max_tokens])
+    |> put_present(:temperature, opts[:temperature])
+    |> put_present(:max_tokens, opts[:max_tokens])
     |> put_tools(tools)
-    |> do_request(api_key, base_url)
+    |> send_request(api_key, base_url)
     |> handle_response()
   end
 
@@ -95,14 +97,14 @@ defmodule LangEx.LLM.OpenAI do
     %Message.ToolCall{name: name, id: id, args: decode_args(raw_args)}
   end
 
-  defp decode_args(args) when is_binary(args), do: args |> Jason.decode() |> unwrap_decoded()
+  defp decode_args(args) when is_binary(args), do: args |> Jason.decode() |> parse_decoded()
   defp decode_args(args) when is_map(args), do: args
   defp decode_args(_), do: %{}
 
-  defp unwrap_decoded({:ok, parsed}), do: parsed
-  defp unwrap_decoded(_), do: %{}
+  defp parse_decoded({:ok, parsed}), do: parsed
+  defp parse_decoded(_), do: %{}
 
-  defp do_request(body, api_key, base_url) do
+  defp send_request(body, api_key, base_url) do
     Req.post("#{base_url}/chat/completions",
       json: body,
       headers: [
@@ -169,6 +171,6 @@ defmodule LangEx.LLM.OpenAI do
 
   defp format_tool(raw), do: raw
 
-  defp maybe_put(map, _key, nil), do: map
-  defp maybe_put(map, key, value), do: Map.put(map, key, value)
+  defp put_present(map, _key, nil), do: map
+  defp put_present(map, key, value), do: Map.put(map, key, value)
 end

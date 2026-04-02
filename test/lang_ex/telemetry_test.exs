@@ -127,7 +127,7 @@ defmodule LangEx.TelemetryTest do
         Graph.new(messages: {[], &Message.add_messages/2})
         |> Graph.add_node(
           :llm,
-          LangEx.ChatModel.node(provider: LangEx.LLM.OpenAI, model: "gpt-4o")
+          LangEx.LLM.ChatModel.node(provider: LangEx.LLM.OpenAI, model: "gpt-4o")
         )
         |> Graph.add_edge(:__start__, :llm)
         |> Graph.add_edge(:llm, :__end__)

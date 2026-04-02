@@ -25,7 +25,7 @@ if Code.ensure_loaded?(Redix) do
 
       with {:ok, _} <- Redix.command(conn, ["SET", key, serialize(cp)]),
            {:ok, _} <- Redix.command(conn, ["ZADD", index_key, score, cp.checkpoint_id]) do
-        maybe_apply_ttl(conn, config, key, index_key)
+        apply_ttl(conn, config, key, index_key)
         :ok
       end
     end
@@ -68,17 +68,17 @@ if Code.ensure_loaded?(Redix) do
     defp checkpoint_key(thread_id, cp_id), do: "#{@prefix}:cp:#{thread_id}:#{cp_id}"
     defp thread_index_key(thread_id), do: "#{@prefix}:thread:#{thread_id}"
 
-    defp maybe_apply_ttl(_conn, config, _key, _index_key) when not is_map_key(config, :ttl),
+    defp apply_ttl(_conn, config, _key, _index_key) when not is_map_key(config, :ttl),
       do: :ok
 
-    defp maybe_apply_ttl(conn, config, key, index_key) do
+    defp apply_ttl(conn, config, key, index_key) do
       ttl = Keyword.get(config, :ttl)
-      do_apply_ttl(conn, ttl, key, index_key)
+      set_expiry(conn, ttl, key, index_key)
     end
 
-    defp do_apply_ttl(_conn, nil, _key, _index_key), do: :ok
+    defp set_expiry(_conn, nil, _key, _index_key), do: :ok
 
-    defp do_apply_ttl(conn, ttl, key, index_key) do
+    defp set_expiry(conn, ttl, key, index_key) do
       Redix.command(conn, ["EXPIRE", key, "#{ttl}"])
       Redix.command(conn, ["EXPIRE", index_key, "#{ttl}"])
     end

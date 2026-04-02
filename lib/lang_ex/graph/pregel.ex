@@ -1,4 +1,4 @@
-defmodule LangEx.Pregel do
+defmodule LangEx.Graph.Pregel do
   @moduledoc """
   Super-step execution engine inspired by Google's Pregel.
 
@@ -11,10 +11,10 @@ defmodule LangEx.Pregel do
   """
 
   alias LangEx.Checkpoint
-  alias LangEx.CompiledGraph
-  alias LangEx.State
-  alias LangEx.Types.Command
-  alias LangEx.Types.Send
+  alias LangEx.Command
+  alias LangEx.Graph.Compiled
+  alias LangEx.Graph.State
+  alias LangEx.Send
 
   @type run_opts :: %{
           recursion_limit: pos_integer(),
@@ -27,7 +27,7 @@ defmodule LangEx.Pregel do
         }
 
   @doc "Runs the compiled graph from the start node through to completion."
-  @spec run(CompiledGraph.t(), map(), run_opts() | pos_integer()) ::
+  @spec run(Compiled.t(), map(), run_opts() | pos_integer()) ::
           {:ok, map()} | {:interrupt, term(), map()} | {:error, term()}
   def run(graph, state, limit) when is_integer(limit) do
     run(graph, state, %{
@@ -41,36 +41,37 @@ defmodule LangEx.Pregel do
     })
   end
 
-  def run(%CompiledGraph{} = graph, state, %{} = opts) do
+  def run(%Compiled{} = graph, state, %{} = opts) do
     metadata = graph_invoke_metadata(graph, opts)
 
     :telemetry.span([:lang_ex, :graph, :invoke], metadata, fn ->
-      result = do_run(graph, state, opts)
+      result = run_graph(graph, state, opts)
       {result, Map.put(metadata, :result, result_tag(result))}
     end)
   end
 
-  defp do_run(graph, state, %{resume: %{node: node, value: value}} = opts)
+  defp run_graph(graph, state, %{resume: %{node: node, value: value}} = opts)
        when not is_nil(node) do
     Process.put(:lang_ex_resume, value)
     result = execute_single_node(graph, state, node, opts)
     Process.delete(:lang_ex_resume)
 
-    case result do
-      {:interrupted, payload, int_state} ->
-        save_interrupt(graph, int_state, node, payload, opts)
-
-      {new_state, command_targets} ->
-        graph
-        |> resolve_next_nodes(new_state, [node], command_targets)
-        |> step(graph, new_state, %{opts | resume: nil, step: opts.step + 1})
-    end
+    handle_resume_result(result, graph, node, opts)
   end
 
-  defp do_run(graph, state, opts) do
+  defp run_graph(graph, state, opts) do
     graph
     |> resolve_targets(:__start__, state)
     |> step(graph, state, opts)
+  end
+
+  defp handle_resume_result({:interrupted, payload, int_state}, graph, node, opts),
+    do: save_interrupt(graph, int_state, node, payload, opts)
+
+  defp handle_resume_result({new_state, command_targets}, graph, node, opts) do
+    graph
+    |> resolve_next_nodes(new_state, [node], command_targets)
+    |> step(graph, new_state, %{opts | resume: nil, step: opts.step + 1})
   end
 
   defp step([], _graph, state, _opts), do: {:ok, state}
@@ -111,13 +112,13 @@ defmodule LangEx.Pregel do
   end
 
   defp handle_super_step_result({new_state, command_targets}, graph, active, opts) do
-    clean_state = strip_managed(new_state)
-    emit(opts, {:step_end, opts.step, clean_state})
-    maybe_save_checkpoint(opts, clean_state, active)
+    clean = strip_managed(new_state)
+    emit(opts, {:step_end, opts.step, clean})
+    save_checkpoint(opts, clean, active)
 
     graph
-    |> resolve_next_nodes(clean_state, active, command_targets)
-    |> continue(graph, clean_state, opts)
+    |> resolve_next_nodes(clean, active, command_targets)
+    |> continue(graph, clean, opts)
   end
 
   defp continue([], _graph, state, _opts), do: {:ok, state}
@@ -126,13 +127,10 @@ defmodule LangEx.Pregel do
   defp continue(next, graph, state, opts),
     do: step(next, graph, state, %{opts | step: opts.step + 1})
 
-  # --- Node execution ---
-
   defp execute_nodes(graph, state, [node_name], opts) do
-    case execute_single_node(graph, state, node_name, opts) do
-      {:interrupted, payload, int_state} -> {:interrupted, payload, int_state, node_name}
-      result -> result
-    end
+    graph
+    |> execute_single_node(state, node_name, opts)
+    |> tag_single_node_result(node_name)
   end
 
   defp execute_nodes(graph, state, nodes, opts) do
@@ -141,6 +139,11 @@ defmodule LangEx.Pregel do
     |> Task.yield_many(:infinity)
     |> Enum.reduce({state, []}, &reduce_task_result(&1, &2, graph.reducers))
   end
+
+  defp tag_single_node_result({:interrupted, payload, int_state}, node_name),
+    do: {:interrupted, payload, int_state, node_name}
+
+  defp tag_single_node_result(result, _node_name), do: result
 
   defp spawn_node_task(graph, name, state, opts) do
     Task.Supervisor.async_nolink(LangEx.TaskSupervisor, fn ->
@@ -176,15 +179,25 @@ defmodule LangEx.Pregel do
     metadata = %{node: node_name}
 
     :telemetry.span([:lang_ex, :node, :execute], metadata, fn ->
-      case call_node(graph, node_name, state, opts) do
-        {:interrupted, _, _} = interrupt ->
-          {interrupt, metadata}
-
-        result ->
-          emit(opts, {:node_end, node_name, result})
-          {merge_node_result(result, state, graph.reducers, []), metadata}
-      end
+      graph
+      |> call_node(node_name, state, opts)
+      |> finalize_node_call(node_name, state, graph.reducers, opts, metadata)
     end)
+  end
+
+  defp finalize_node_call(
+         {:interrupted, _, _} = interrupt,
+         _node_name,
+         _state,
+         _reducers,
+         _opts,
+         metadata
+       ),
+       do: {interrupt, metadata}
+
+  defp finalize_node_call(result, node_name, state, reducers, opts, metadata) do
+    emit(opts, {:node_end, node_name, result})
+    {merge_node_result(result, state, reducers, []), metadata}
   end
 
   defp call_node(graph, name, state, opts) do
@@ -200,11 +213,13 @@ defmodule LangEx.Pregel do
   defp invoke_node_fn(fun, state, nil), do: fun.(state)
 
   defp invoke_node_fn(fun, state, context) do
-    case Function.info(fun, :arity) do
-      {:arity, 2} -> fun.(state, context)
-      {:arity, 1} -> fun.(state)
-    end
+    fun
+    |> Function.info(:arity)
+    |> dispatch_node_fn(fun, state, context)
   end
+
+  defp dispatch_node_fn({:arity, 2}, fun, state, context), do: fun.(state, context)
+  defp dispatch_node_fn({:arity, 1}, fun, state, _context), do: fun.(state)
 
   defp merge_node_result(%Command{update: update, goto: goto}, state, reducers, cmds) do
     {State.apply_update(state, update, reducers), cmds ++ List.wrap(goto)}
@@ -214,27 +229,31 @@ defmodule LangEx.Pregel do
     {State.apply_update(state, update, reducers), cmds}
   end
 
-  # --- Routing ---
-
   defp resolve_next_nodes(graph, state, executed_nodes, command_targets) do
-    edge_targets = Enum.flat_map(executed_nodes, &resolve_targets(graph, &1, state))
-    Enum.uniq(command_targets ++ edge_targets)
+    executed_nodes
+    |> Enum.flat_map(&resolve_targets(graph, &1, state))
+    |> then(&Enum.uniq(command_targets ++ &1))
   end
 
   defp resolve_targets(graph, node, state) do
-    fixed = Map.get(graph.edges, node, [])
-    conditional = resolve_conditional(Map.fetch(graph.conditional_edges, node), state, graph)
-    Enum.uniq(fixed ++ conditional)
+    [
+      Map.get(graph.edges, node, []),
+      graph.conditional_edges |> Map.fetch(node) |> resolve_conditional(state, graph)
+    ]
+    |> List.flatten()
+    |> Enum.uniq()
   end
 
   defp resolve_conditional(:error, _state, _graph), do: []
 
   defp resolve_conditional({:ok, {routing_fn, mapping}}, state, graph) do
-    case routing_fn.(state) do
-      [%Send{} | _] = sends -> execute_sends(sends, graph)
-      result -> resolve_routing_result(result, mapping)
-    end
+    state
+    |> routing_fn.()
+    |> dispatch_routing(mapping, graph)
   end
+
+  defp dispatch_routing([%Send{} | _] = sends, _mapping, graph), do: execute_sends(sends, graph)
+  defp dispatch_routing(result, mapping, _graph), do: resolve_routing_result(result, mapping)
 
   defp execute_sends(sends, graph) do
     sends
@@ -258,13 +277,15 @@ defmodule LangEx.Pregel do
   defp resolve_routing_result(result, nil) when is_list(result), do: result
 
   defp resolve_routing_result(result, mapping) when is_map(mapping) do
-    case Map.fetch(mapping, result) do
-      {:ok, target} -> List.wrap(target)
-      :error -> raise ArgumentError, "routing returned #{inspect(result)} but no mapping found"
-    end
+    mapping
+    |> Map.fetch(result)
+    |> require_mapped_target!(result)
   end
 
-  # --- Managed values ---
+  defp require_mapped_target!({:ok, target}, _result), do: List.wrap(target)
+
+  defp require_mapped_target!(:error, result),
+    do: raise(ArgumentError, "routing returned #{inspect(result)} but no mapping found")
 
   defp inject_managed(state, %{recursion_limit: limit, step: step}) do
     Map.put(state, :remaining_steps, limit - step)
@@ -272,14 +293,12 @@ defmodule LangEx.Pregel do
 
   defp strip_managed(state), do: Map.delete(state, :remaining_steps)
 
-  # --- Checkpointing ---
+  defp save_checkpoint(%{checkpointer: nil}, _state, _nodes), do: :ok
 
-  defp maybe_save_checkpoint(%{checkpointer: nil}, _state, _nodes), do: :ok
-
-  defp maybe_save_checkpoint(%{checkpointer: cp, config: config, step: step}, state, nodes) do
+  defp save_checkpoint(%{checkpointer: cp, config: config, step: step}, state, nodes) do
     config
     |> Keyword.get(:thread_id)
-    |> do_save_checkpoint(cp, config,
+    |> persist_checkpoint(cp, config,
       state: state,
       next_nodes: nodes,
       step: step,
@@ -287,9 +306,9 @@ defmodule LangEx.Pregel do
     )
   end
 
-  defp do_save_checkpoint(nil, _cp, _config, _data), do: :ok
+  defp persist_checkpoint(nil, _cp, _config, _data), do: :ok
 
-  defp do_save_checkpoint(thread_id, cp, config, data) do
+  defp persist_checkpoint(thread_id, cp, config, data) do
     metadata = %{checkpointer: cp, thread_id: thread_id}
 
     :telemetry.span([:lang_ex, :checkpoint, :save], metadata, fn ->
@@ -308,14 +327,14 @@ defmodule LangEx.Pregel do
        }) do
     config
     |> Keyword.get(:thread_id)
-    |> do_save_interrupt(cp, config, state, node, payload, step)
+    |> persist_interrupt(cp, config, state, node, payload, step)
 
     {:interrupt, payload, state}
   end
 
-  defp do_save_interrupt(nil, _cp, _config, _state, _node, _payload, _step), do: :ok
+  defp persist_interrupt(nil, _cp, _config, _state, _node, _payload, _step), do: :ok
 
-  defp do_save_interrupt(thread_id, cp, config, state, node, payload, step) do
+  defp persist_interrupt(thread_id, cp, config, state, node, payload, step) do
     cp.save(
       config,
       Checkpoint.new(
@@ -329,12 +348,8 @@ defmodule LangEx.Pregel do
     )
   end
 
-  # --- Streaming ---
-
   defp emit(%{emit_to: nil}, _event), do: :ok
   defp emit(%{emit_to: pid}, event), do: send(pid, {:lang_ex_stream, event})
-
-  # --- Telemetry helpers ---
 
   defp graph_invoke_metadata(graph, opts) do
     %{

@@ -1,8 +1,8 @@
-defmodule LangEx.ChatModelTest do
+defmodule LangEx.LLM.ChatModelTest do
   use ExUnit.Case, async: false
   use Mimic
 
-  alias LangEx.ChatModel
+  alias LangEx.LLM.ChatModel
   alias LangEx.Graph
   alias LangEx.Message
 

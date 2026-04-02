@@ -22,8 +22,8 @@ defmodule LangEx.Config do
   @doc "Resolves the API key for a given provider."
   @spec api_key(atom(), keyword()) :: String.t() | nil
   def api_key(provider, opts \\ []) do
-    defaults = provider_defaults(provider)
-    opts[:api_key] || app_config(provider, :api_key) || System.get_env(defaults.env_key)
+    opts[:api_key] || app_config(provider, :api_key) ||
+      System.get_env(provider_defaults(provider).env_key)
   end
 
   @doc "Resolves the API key, raising if not found."
@@ -38,20 +38,21 @@ defmodule LangEx.Config do
   @doc "Resolves the model name for a provider."
   @spec model(atom(), keyword()) :: String.t()
   def model(provider, opts \\ []) do
-    defaults = provider_defaults(provider)
-    opts[:model] || app_config(provider, :model) || defaults.default_model
+    opts[:model] || app_config(provider, :model) || provider_defaults(provider).default_model
   end
 
   @doc "Returns the provider defaults map, merging built-in with user-configured."
   @spec provider_defaults(atom()) :: %{env_key: String.t(), default_model: String.t()}
   def provider_defaults(provider) do
-    custom = Application.get_env(:lang_ex, :providers, %{})
-
-    case Map.fetch(@builtin_defaults, provider) do
-      {:ok, defaults} -> defaults
-      :error -> Map.fetch!(custom, provider)
-    end
+    @builtin_defaults
+    |> Map.fetch(provider)
+    |> fetch_defaults(provider)
   end
+
+  defp fetch_defaults({:ok, defaults}, _provider), do: defaults
+
+  defp fetch_defaults(:error, provider),
+    do: :lang_ex |> Application.get_env(:providers, %{}) |> Map.fetch!(provider)
 
   defp app_config(section, key) do
     :lang_ex

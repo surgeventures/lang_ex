@@ -2,7 +2,7 @@ defmodule LangEx.GraphTest do
   use ExUnit.Case, async: true
 
   alias LangEx.Graph
-  alias LangEx.Types.Command
+  alias LangEx.Command
 
   describe "linear graph execution" do
     test "single-node graph processes state and returns result" do

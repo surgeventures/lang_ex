@@ -1,4 +1,4 @@
-defmodule LangEx.State do
+defmodule LangEx.Graph.State do
   @moduledoc """
   State management with reducer support.
 
@@ -35,14 +35,15 @@ defmodule LangEx.State do
   @spec apply_update(map(), map(), reducers()) :: map()
   def apply_update(current, update, reducers) do
     Enum.reduce(update, current, fn {key, value}, acc ->
-      case Map.fetch(reducers, key) do
-        {:ok, reducer} ->
-          current_val = Map.get(acc, key)
-          Map.put(acc, key, reducer.(current_val, value))
-
-        :error ->
-          Map.put(acc, key, value)
-      end
+      reducers
+      |> Map.fetch(key)
+      |> apply_key_update(acc, key, value)
     end)
   end
+
+  defp apply_key_update({:ok, reducer}, acc, key, value) do
+    acc |> Map.get(key) |> reducer.(value) |> then(&Map.put(acc, key, &1))
+  end
+
+  defp apply_key_update(:error, acc, key, value), do: Map.put(acc, key, value)
 end

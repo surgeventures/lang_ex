@@ -86,22 +86,26 @@ defmodule LangEx.Message do
           into: %{},
           do: {id, msg}
 
-    replaced_ids = MapSet.new(Map.keys(replacements))
+    replaced_ids = replacements |> Map.keys() |> MapSet.new()
 
-    Enum.map(existing, &maybe_replace(&1, replacements)) ++
+    Enum.map(existing, &replace_by_id(&1, replacements)) ++
       Enum.reject(new, &MapSet.member?(replaced_ids, message_id(&1)))
   end
 
   def add_messages(existing, single), do: add_messages(existing, [single])
 
-  defp maybe_replace(msg, replacements) do
-    with id when is_binary(id) <- message_id(msg),
-         {:ok, replacement} <- Map.fetch(replacements, id) do
-      replacement
-    else
-      _ -> msg
-    end
+  defp replace_by_id(msg, replacements) do
+    msg
+    |> message_id()
+    |> fetch_replacement(replacements)
+    |> apply_replacement(msg)
   end
+
+  defp fetch_replacement(id, replacements) when is_binary(id), do: Map.fetch(replacements, id)
+  defp fetch_replacement(_, _replacements), do: :error
+
+  defp apply_replacement({:ok, replacement}, _msg), do: replacement
+  defp apply_replacement(:error, msg), do: msg
 
   defp message_id(%{id: id}) when is_binary(id), do: id
   defp message_id(_), do: nil

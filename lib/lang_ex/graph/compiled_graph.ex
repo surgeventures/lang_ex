@@ -1,4 +1,4 @@
-defmodule LangEx.CompiledGraph do
+defmodule LangEx.Graph.Compiled do
   @moduledoc """
   A compiled, executable graph.
 
@@ -7,8 +7,8 @@ defmodule LangEx.CompiledGraph do
   """
 
   alias LangEx.Checkpoint
-  alias LangEx.Pregel
-  alias LangEx.State
+  alias LangEx.Graph.Pregel
+  alias LangEx.Graph.State
 
   defstruct [
     :nodes,
@@ -38,35 +38,42 @@ defmodule LangEx.CompiledGraph do
   - `:config` - keyword with `:thread_id` for checkpointing / resume
   - `:context` - runtime context passed to arity-2 node functions
   """
-  @spec invoke(t(), map() | LangEx.Types.Command.t(), keyword()) ::
+  @spec invoke(t(), map() | LangEx.Command.t(), keyword()) ::
           {:ok, map()} | {:interrupt, term(), map()} | {:error, term()}
   def invoke(graph, input, opts \\ [])
 
   def invoke(
         %__MODULE__{checkpointer: cp} = graph,
-        %LangEx.Types.Command{resume: resume_val},
+        %LangEx.Command{resume: resume_val},
         opts
       )
       when cp != nil and resume_val != nil do
-    config = Keyword.get(opts, :config, [])
-
-    case load_checkpoint(cp, config) do
-      {:ok, %Checkpoint{pending_interrupts: [%{node: node} | _]} = saved} ->
-        Pregel.run(
-          graph,
-          saved.state,
-          build_run_opts(opts, graph, resume: %{node: node, value: resume_val}, step: saved.step)
-        )
-
-      _ ->
-        {:error, :no_pending_interrupt}
-    end
+    cp
+    |> load_checkpoint(Keyword.get(opts, :config, []))
+    |> resume_from_checkpoint(graph, resume_val, opts)
   end
 
   def invoke(%__MODULE__{} = graph, input, opts) when is_map(input) do
-    state = resolve_initial_state(graph, input, opts)
-    Pregel.run(graph, state, build_run_opts(opts, graph))
+    graph
+    |> resolve_initial_state(input, opts)
+    |> then(&Pregel.run(graph, &1, build_run_opts(opts, graph)))
   end
+
+  defp resume_from_checkpoint(
+         {:ok, %Checkpoint{pending_interrupts: [%{node: node} | _]} = saved},
+         graph,
+         resume_val,
+         opts
+       ) do
+    Pregel.run(
+      graph,
+      saved.state,
+      build_run_opts(opts, graph, resume: %{node: node, value: resume_val}, step: saved.step)
+    )
+  end
+
+  defp resume_from_checkpoint(_, _graph, _resume_val, _opts),
+    do: {:error, :no_pending_interrupt}
 
   defp resolve_initial_state(graph, input, opts) do
     with cp when not is_nil(cp) <- graph.checkpointer,

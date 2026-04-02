@@ -6,7 +6,7 @@ defmodule LangEx.Tool do
   to any LLM adapter. Each adapter translates to its native wire format.
 
   The optional `:function` field carries the tool's implementation. When
-  present, `LangEx.ToolNode` can execute it automatically.
+  present, `LangEx.Tool.Node` can execute it automatically.
 
   - **Arity 1** `fn(args)` — receives only the LLM-provided arguments map.
   - **Arity 2** `fn(args, context)` — receives args plus a context map

@@ -1,4 +1,4 @@
-defmodule LangEx.ChatModel do
+defmodule LangEx.LLM.ChatModel do
   @moduledoc """
   Helper to create graph nodes that call an LLM.
 
@@ -7,7 +7,7 @@ defmodule LangEx.ChatModel do
   the response to the messages list.
   """
 
-  alias LangEx.ChatModels
+  alias LangEx.LLM.Registry
 
   @doc """
   Returns a node function that calls an LLM provider.
@@ -21,9 +21,9 @@ defmodule LangEx.ChatModel do
   - All other opts forwarded to `provider.chat/2` (`:api_key`, `:temperature`, etc.)
 
   Either `:provider` or `:model` must be given. When `:model` is a string and
-  `:provider` is absent, the provider is resolved via `LangEx.ChatModels.init_chat_model/2`.
+  `:provider` is absent, the provider is resolved via `LangEx.LLM.Registry.init_chat_model/2`.
 
-  Tool execution is handled by a separate `LangEx.ToolNode` in the graph,
+  Tool execution is handled by a separate `LangEx.Tool.Node` in the graph,
   not by the LLM node itself.
 
   ## Examples
@@ -59,13 +59,13 @@ defmodule LangEx.ChatModel do
   defp resolve_provider(opts) do
     opts
     |> Keyword.pop(:provider)
-    |> do_resolve_provider()
+    |> ensure_provider()
   end
 
-  defp do_resolve_provider({provider, rest}) when not is_nil(provider), do: {provider, rest}
+  defp ensure_provider({provider, rest}) when not is_nil(provider), do: {provider, rest}
 
-  defp do_resolve_provider({nil, rest}) do
+  defp ensure_provider({nil, rest}) do
     {model, rest} = Keyword.pop!(rest, :model)
-    ChatModels.init_chat_model(model, rest)
+    Registry.init_chat_model(model, rest)
   end
 end

@@ -42,16 +42,19 @@ defmodule LangEx.ContextCompaction do
   @spec compact_if_needed([Message.t()], keyword()) :: [Message.t()]
   def compact_if_needed(messages, opts \\ []) do
     max_bytes = Keyword.get(opts, :max_bytes, @default_max_bytes)
-
-    if messages_byte_size(messages) <= max_bytes,
-      do: messages,
-      else: compact(messages, opts)
+    enforce_budget(messages, messages_byte_size(messages), max_bytes, opts)
   end
+
+  defp enforce_budget(messages, current_bytes, max_bytes, _opts) when current_bytes <= max_bytes,
+    do: messages
+
+  defp enforce_budget(messages, _current_bytes, _max_bytes, opts),
+    do: compact(messages, opts)
 
   @doc "Calculate total byte size of a message list."
   @spec messages_byte_size([Message.t()]) :: non_neg_integer()
   def messages_byte_size(messages) when is_list(messages) do
-    Enum.reduce(messages, 0, &(message_byte_size(&1) + &2))
+    messages |> Enum.map(&message_byte_size/1) |> Enum.sum()
   end
 
   defp compact([system | rest], opts) do
@@ -64,24 +67,43 @@ defmodule LangEx.ContextCompaction do
     total = messages_byte_size([system | rest])
     dropped_count = count_rounds_to_drop(rounds, total, max_bytes, min_rounds)
 
-    if dropped_count == 0 do
-      [system | rest]
-    else
-      {dropped, kept} = Enum.split(rounds, dropped_count)
-      kept_flat = List.flatten(kept) ++ trailing
+    apply_compaction(
+      dropped_count,
+      system,
+      rest,
+      rounds,
+      trailing,
+      error_detector,
+      notice_builder
+    )
+  end
 
-      Logger.info(
-        "ContextCompact: dropped #{dropped_count}/#{length(rounds)} rounds " <>
-          "(#{messages_byte_size([system | kept_flat])} bytes after)"
-      )
+  defp apply_compaction(0, system, rest, _rounds, _trailing, _error_detector, _notice_builder),
+    do: [system | rest]
 
-      notice =
-        dropped
-        |> format_dropped_summaries(error_detector)
-        |> then(&notice_builder.(&1, dropped_count))
+  defp apply_compaction(
+         dropped_count,
+         system,
+         _rest,
+         rounds,
+         trailing,
+         error_detector,
+         notice_builder
+       ) do
+    {dropped, kept} = Enum.split(rounds, dropped_count)
+    kept_flat = List.flatten(kept) ++ trailing
 
-      [system, notice | kept_flat]
-    end
+    Logger.info(
+      "ContextCompact: dropped #{dropped_count}/#{length(rounds)} rounds " <>
+        "(#{messages_byte_size([system | kept_flat])} bytes after)"
+    )
+
+    notice =
+      dropped
+      |> format_dropped_summaries(error_detector)
+      |> then(&notice_builder.(&1, dropped_count))
+
+    [system, notice | kept_flat]
   end
 
   defp default_compaction_notice(summary_text, count) do
@@ -95,32 +117,33 @@ defmodule LangEx.ContextCompaction do
 
   defp chunk_into_rounds(messages) do
     {rounds, current, trailing} =
-      Enum.reduce(messages, {[], [], []}, fn
-        %Message.AI{tool_calls: calls} = msg, {rounds, current, _trailing}
-        when is_list(calls) and calls != [] ->
-          new_rounds =
-            if current == [],
-              do: rounds,
-              else: rounds ++ [Enum.reverse(current)]
+      Enum.reduce(messages, {[], [], []}, &chunk_message/2)
 
-          {new_rounds, [msg], []}
-
-        %Message.Tool{} = msg, {rounds, [_ | _] = current, _trailing} ->
-          {rounds, [msg | current], []}
-
-        msg, {rounds, [], trailing} ->
-          {rounds, [], trailing ++ [msg]}
-
-        msg, {rounds, current, _trailing} ->
-          new_rounds = rounds ++ [Enum.reverse(current)]
-          {new_rounds, [], [msg]}
-      end)
-
-    final_rounds =
-      if current == [], do: rounds, else: rounds ++ [Enum.reverse(current)]
-
-    {final_rounds, trailing}
+    {finalize_rounds(rounds, current), trailing}
   end
+
+  defp chunk_message(
+         %Message.AI{tool_calls: calls} = msg,
+         {rounds, current, _trailing}
+       )
+       when is_list(calls) and calls != [] do
+    {flush_current(rounds, current), [msg], []}
+  end
+
+  defp chunk_message(%Message.Tool{} = msg, {rounds, [_ | _] = current, _trailing}),
+    do: {rounds, [msg | current], []}
+
+  defp chunk_message(msg, {rounds, [], trailing}),
+    do: {rounds, [], trailing ++ [msg]}
+
+  defp chunk_message(msg, {rounds, current, _trailing}),
+    do: {rounds ++ [Enum.reverse(current)], [], [msg]}
+
+  defp flush_current(rounds, []), do: rounds
+  defp flush_current(rounds, current), do: rounds ++ [Enum.reverse(current)]
+
+  defp finalize_rounds(rounds, []), do: rounds
+  defp finalize_rounds(rounds, current), do: rounds ++ [Enum.reverse(current)]
 
   defp count_rounds_to_drop(_rounds, total, max_bytes, _min_rounds)
        when total <= max_bytes,
@@ -137,15 +160,13 @@ defmodule LangEx.ContextCompaction do
   defp format_dropped_summaries([], _error_detector), do: ""
 
   defp format_dropped_summaries(rounds, error_detector) do
-    summaries =
-      rounds
-      |> Enum.with_index(1)
-      |> Enum.map_join("\n", fn {round_msgs, idx} ->
-        {tool_names, outcome} = summarize_round(round_msgs, error_detector)
-        "- Round #{idx}: called #{tool_names} -> #{outcome}"
-      end)
-
-    "Summary of dropped rounds:\n#{summaries}\n\n"
+    rounds
+    |> Enum.with_index(1)
+    |> Enum.map_join("\n", fn {round_msgs, idx} ->
+      {tool_names, outcome} = summarize_round(round_msgs, error_detector)
+      "- Round #{idx}: called #{tool_names} -> #{outcome}"
+    end)
+    |> then(&"Summary of dropped rounds:\n#{&1}\n\n")
   end
 
   defp summarize_round(round_msgs, error_detector) do
@@ -159,36 +180,52 @@ defmodule LangEx.ContextCompaction do
           []
       end)
       |> Enum.join(", ")
-      |> then(&if(&1 == "", do: "unknown", else: &1))
-
-    tool_results = Enum.filter(round_msgs, &match?(%Message.Tool{}, &1))
+      |> default_on_empty("unknown")
 
     outcome =
-      cond do
-        tool_results == [] ->
-          "no results"
-
-        Enum.any?(tool_results, fn %Message.Tool{content: c} ->
-          error_detector.(c || "")
-        end) ->
-          "error"
-
-        Enum.all?(tool_results, fn %Message.Tool{content: c} ->
-          byte_size(c || "") < @empty_result_threshold
-        end) ->
-          "empty/minimal data"
-
-        true ->
-          total =
-            Enum.reduce(tool_results, 0, fn %Message.Tool{content: c}, acc ->
-              acc + byte_size(c || "")
-            end)
-
-          "#{div(total, 1000)}KB of data"
-      end
+      round_msgs
+      |> Enum.filter(&match?(%Message.Tool{}, &1))
+      |> classify_round_outcome(error_detector)
 
     {tool_names, outcome}
   end
+
+  defp classify_round_outcome([], _error_detector), do: "no results"
+
+  defp classify_round_outcome(tool_results, error_detector) do
+    tool_results
+    |> detect_outcome_type(error_detector)
+    |> format_outcome(tool_results)
+  end
+
+  defp detect_outcome_type(tool_results, error_detector) do
+    has_error =
+      Enum.any?(tool_results, fn %Message.Tool{content: c} ->
+        error_detector.(c || "")
+      end)
+
+    all_empty =
+      Enum.all?(tool_results, fn %Message.Tool{content: c} ->
+        byte_size(c || "") < @empty_result_threshold
+      end)
+
+    {has_error, all_empty}
+  end
+
+  defp format_outcome({true, _}, _tool_results), do: "error"
+  defp format_outcome({_, true}, _tool_results), do: "empty/minimal data"
+
+  defp format_outcome(_, tool_results) do
+    tool_results
+    |> Enum.map(&tool_content_size/1)
+    |> Enum.sum()
+    |> then(&"#{div(&1, 1000)}KB of data")
+  end
+
+  defp tool_content_size(%Message.Tool{content: c}), do: byte_size(c || "")
+
+  defp default_on_empty("", fallback), do: fallback
+  defp default_on_empty(value, _fallback), do: value
 
   @doc """
   Default error detector for tool results.
@@ -200,12 +237,14 @@ defmodule LangEx.ContextCompaction do
   def default_error_detector(content) when byte_size(content) == 0, do: false
 
   def default_error_detector(content) do
-    case Jason.decode(content) do
-      {:ok, %{"error" => _}} -> true
-      {:ok, %{"errors" => _}} -> true
-      _ -> false
-    end
+    content
+    |> Jason.decode()
+    |> error_payload?()
   end
+
+  defp error_payload?({:ok, %{"error" => _}}), do: true
+  defp error_payload?({:ok, %{"errors" => _}}), do: true
+  defp error_payload?(_), do: false
 
   defp message_byte_size(%Message.Tool{content: c}) when is_binary(c), do: byte_size(c)
   defp message_byte_size(%Message.AI{content: c}) when is_binary(c), do: byte_size(c)

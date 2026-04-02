@@ -1,4 +1,4 @@
-defmodule LangEx.Types.Send do
+defmodule LangEx.Send do
   @moduledoc """
   Directs execution to a node with a custom state payload.
   Used for map-reduce patterns where the number of edges is dynamic.

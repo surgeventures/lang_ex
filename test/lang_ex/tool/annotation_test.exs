@@ -1,8 +1,8 @@
-defmodule LangEx.ToolAnnotationTest do
+defmodule LangEx.Tool.AnnotationTest do
   use ExUnit.Case, async: true
 
   alias LangEx.Message
-  alias LangEx.ToolAnnotation
+  alias LangEx.Tool.Annotation, as: ToolAnnotation
 
   describe "annotate/2" do
     test "returns empty map when no annotations needed" do

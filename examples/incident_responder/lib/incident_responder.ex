@@ -19,7 +19,7 @@ defmodule IncidentResponder do
   """
 
   alias IncidentResponder.Graph
-  alias LangEx.Types.Command
+  alias LangEx.Command
 
   @checkpointer LangEx.Checkpointer.Postgres
   @repo IncidentResponder.Repo
@@ -85,36 +85,45 @@ defmodule IncidentResponder do
   end
 
   defp repl_loop(session_id, opts) do
-    case IO.gets("You: ") do
-      :eof ->
-        IO.puts("\nSession ended.")
+    IO.gets("You: ")
+    |> handle_repl_input(session_id, opts)
+  end
 
-      input ->
-        message = String.trim(input)
+  defp handle_repl_input(:eof, _session_id, _opts),
+    do: IO.puts("\nSession ended.")
 
-        cond do
-          message in ["quit", "exit", "q"] ->
-            IO.puts("\nSession ended.")
+  defp handle_repl_input(input, session_id, opts) do
+    input
+    |> String.trim()
+    |> process_repl_message(session_id, opts)
+  end
 
-          message == "" ->
-            repl_loop(session_id, opts)
+  defp process_repl_message(message, _session_id, _opts)
+       when message in ["quit", "exit", "q"],
+       do: IO.puts("\nSession ended.")
 
-          true ->
-            case chat(session_id, message, opts) do
-              {:ok, response} ->
-                IO.puts("\nOps: #{response}\n")
-                repl_loop(session_id, opts)
+  defp process_repl_message("", session_id, opts),
+    do: repl_loop(session_id, opts)
 
-              {:done, response} ->
-                IO.puts("\nOps: #{response}\n")
-                IO.puts("[Incident closed]")
+  defp process_repl_message(message, session_id, opts) do
+    message
+    |> then(&chat(session_id, &1, opts))
+    |> handle_chat_response(session_id, opts)
+  end
 
-              {:error, reason} ->
-                IO.puts("\n[Error: #{inspect(reason)}]\n")
-                repl_loop(session_id, opts)
-            end
-        end
-    end
+  defp handle_chat_response({:ok, response}, session_id, opts) do
+    IO.puts("\nOps: #{response}\n")
+    repl_loop(session_id, opts)
+  end
+
+  defp handle_chat_response({:done, response}, _session_id, _opts) do
+    IO.puts("\nOps: #{response}\n")
+    IO.puts("[Incident closed]")
+  end
+
+  defp handle_chat_response({:error, reason}, session_id, opts) do
+    IO.puts("\n[Error: #{inspect(reason)}]\n")
+    repl_loop(session_id, opts)
   end
 
   defp build_config(session_id, opts) do

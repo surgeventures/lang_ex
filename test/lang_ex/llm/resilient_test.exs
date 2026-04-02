@@ -28,10 +28,9 @@ defmodule LangEx.LLM.ResilientTest do
         n = :counters.get(call_count, 1)
         :counters.add(call_count, 1, 1)
 
-        if n == 0 do
-          {:error, {429, %{"error" => "rate limited"}}}
-        else
-          {:ok, Message.ai("recovered"), %{input_tokens: 5, output_tokens: 3}}
+        case n do
+          0 -> {:error, {429, %{"error" => "rate limited"}}}
+          _ -> {:ok, Message.ai("recovered"), %{input_tokens: 5, output_tokens: 3}}
         end
       end)
 
@@ -104,9 +103,10 @@ defmodule LangEx.LLM.ResilientTest do
         n = :counters.get(call_count, 1)
         :counters.add(call_count, 1, 1)
 
-        if n == 0,
-          do: {:error, {429, "rate limited"}},
-          else: {:ok, Message.ai("ok"), %{input_tokens: 1, output_tokens: 1}}
+        case n do
+          0 -> {:error, {429, "rate limited"}}
+          _ -> {:ok, Message.ai("ok"), %{input_tokens: 1, output_tokens: 1}}
+        end
       end)
 
       test_pid = self()
