@@ -48,9 +48,11 @@ defmodule LangEx.Graph.Compiled do
         opts
       )
       when cp != nil and resume_val != nil do
+    config = Keyword.get(opts, :config, [])
+
     cp
-    |> load_checkpoint(Keyword.get(opts, :config, []))
-    |> resume_from_checkpoint(graph, resume_val, opts)
+    |> load_checkpoint(config)
+    |> resume_from_checkpoint(graph, resume_val, opts, cp, config)
   end
 
   def invoke(%__MODULE__{} = graph, input, opts) when is_map(input) do
@@ -63,7 +65,9 @@ defmodule LangEx.Graph.Compiled do
          {:ok, %Checkpoint{pending_interrupts: [%{node: node} | _]} = saved},
          graph,
          resume_val,
-         opts
+         opts,
+         _cp,
+         _config
        ) do
     Pregel.run(
       graph,
@@ -72,7 +76,34 @@ defmodule LangEx.Graph.Compiled do
     )
   end
 
-  defp resume_from_checkpoint(_, _graph, _resume_val, _opts),
+  # When the latest checkpoint has no pending interrupts, search through
+  # recent checkpoints for the most recent one that does. This handles
+  # the case where a resumed continuation saves intermediate checkpoints
+  # that bury the next interrupt checkpoint.
+  defp resume_from_checkpoint(
+         {:ok, %Checkpoint{pending_interrupts: nil}},
+         graph,
+         resume_val,
+         opts,
+         cp,
+         config
+       ) do
+    cp.list(config, limit: 20)
+    |> Enum.find(&(is_list(&1.pending_interrupts) and &1.pending_interrupts !== []))
+    |> case do
+      %Checkpoint{pending_interrupts: [%{node: node} | _]} = saved ->
+        Pregel.run(
+          graph,
+          saved.state,
+          build_run_opts(opts, graph, resume: %{node: node, value: resume_val}, step: saved.step)
+        )
+
+      _ ->
+        {:error, :no_pending_interrupt}
+    end
+  end
+
+  defp resume_from_checkpoint(_, _graph, _resume_val, _opts, _cp, _config),
     do: {:error, :no_pending_interrupt}
 
   defp resolve_initial_state(graph, input, opts) do
